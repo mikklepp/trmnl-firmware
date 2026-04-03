@@ -1,4 +1,5 @@
 #include "render.h"
+#include <cstdio>
 #include <trmnl_log.h>
 
 #ifdef BOARD_TRMNL_X
@@ -80,10 +81,31 @@ void renderFull(const DrawList& dl) {
     Log_info("Render: full refresh done");
 }
 
+void renderClockPartial(int hour, int minute) {
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%02d:%02d", hour, minute);
+
+    // Clear the clock digit area and redraw
+    int y_start = LAYOUT_CLOCK_Y;
+    int y_end = LAYOUT_CLOCK_Y + 380;  // 340px font + margin
+    bbep.fillRect(LAYOUT_CLOCK_X, y_start,
+                  LAYOUT_VSPLIT_X - LAYOUT_CLOCK_X, y_end - y_start,
+                  BBEP_WHITE);
+
+    bbep.setFont(fontTable[FONT_DSEG7_340]);
+    bbep.setTextColor(BBEP_BLACK, BBEP_WHITE);
+    bbep.setCursor(LAYOUT_CLOCK_X, LAYOUT_CLOCK_Y);
+    bbep.print(buf);
+
+    bbep.partialUpdate(false, y_start, y_end);
+    Log_info("Render: clock partial %s (rows %d-%d)", buf, y_start, y_end);
+}
+
 #else
 // Stub for non-TRMNL_X builds — these functions are never called
 void render_init(void) {}
 void renderDrawList(const DrawList&) {}
 void renderPartial(const DrawList&) {}
 void renderFull(const DrawList&) {}
+void renderClockPartial(int, int) {}
 #endif // BOARD_TRMNL_X

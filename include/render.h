@@ -15,3 +15,7 @@ void renderPartial(const DrawList& dl);
 
 // Convenience: clear screen, render layout, and do a full refresh.
 void renderFull(const DrawList& dl);
+
+// Partial refresh of clock area only.
+// Clears the clock rectangle, draws time digits, partial updates those rows.
+void renderClockPartial(int hour, int minute);
