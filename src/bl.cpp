@@ -41,6 +41,9 @@
 #include "logo_small.h"
 #include "logo_medium.h"
 #include "loading.h"
+#ifdef CLOCK91_MODE
+#include "clock91.h"
+#endif
 #include <wifi-helpers.h>
 #include <sys/time.h>
 #ifdef SENSOR_SDA
@@ -832,6 +835,15 @@ void bl_init(void)
   iqs323_task_i2c_lock();
   display_init();
   iqs323_task_i2c_unlock();
+
+#ifdef CLOCK91_MODE
+  // clock91 mode: run our wake cycle, then sleep
+  Log_info("clock91 mode — branching from TRMNL flow");
+  clock91_cycle();
+  display_sleep();
+  goToSleep();
+  return;  // never reached, goToSleep doesn't return
+#endif
   filesystem_init();
 #endif
 
