@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include "forecast.h"
 
 // ── Fonts (map to bb_epaper Group5 font headers) ──
 
@@ -66,6 +67,9 @@ struct DisplayState {
     bool timer_active;
     int timer_seconds;     // remaining
     int timer_total;       // for progress bar
+
+    // Forecast grid (NULL = no forecast data)
+    const ForecastGrid* forecast;
 };
 
 // ── Layout constants (pixel coordinates from prototype) ──
@@ -107,6 +111,15 @@ struct DisplayState {
 // Ruuvi (right below mid)
 #define LAYOUT_RUUVI_Y0       700
 #define LAYOUT_RUUVI_DY       105
+
+// Forecast grid (0,1024 → 1872,1404)
+#define LAYOUT_FC_LABEL_X      10
+#define LAYOUT_FC_ROW_HR_Y   1068
+#define LAYOUT_FC_ROW_WIND_Y 1136
+#define LAYOUT_FC_ROW_GUST_Y 1204
+#define LAYOUT_FC_ROW_DIR_Y  1272
+#define LAYOUT_FC_ROW_SEA_Y  1340
+#define LAYOUT_FC_SEG_Y      1034
 
 // Timer
 #define LAYOUT_TIMER_X        936   // centred horizontally

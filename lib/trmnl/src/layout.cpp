@@ -2,6 +2,7 @@
 #include "format.h"
 #include "trmnl_log.h"
 #include <cstring>
+#include <cstdio>
 #include <cmath>
 
 // Static text buffers (persist until next buildLayout call)
@@ -199,6 +200,60 @@ static void buildTimer(DrawList& dl, const DisplayState& s) {
     }
 }
 
+// 24 column center x-positions (from layout prototype)
+static const int FC_COL_X[FORECAST_COLS] = {
+    117, 192, 267, 341,     // OBS (4 cols)
+    416, 491, 565, 640,     // FC 1H (4 cols)
+    715, 789, 864, 939, 1013, 1088, 1163, 1237,  // FC 2H (8 cols)
+    1312, 1387, 1461, 1536, 1611, 1685, 1760, 1835  // FC 4H (8 cols)
+};
+
+// Static buffers for forecast cell values — one per cell (24 cols × 5 rows)
+static char fc_cells[FORECAST_COLS][5][8];
+
+static void buildForecast(DrawList& dl, const ForecastGrid& grid) {
+    // Row labels (left edge)
+    addText(dl, LAYOUT_FC_LABEL_X, LAYOUT_FC_ROW_HR_Y,   "HOUR", FONT_UBUNTU_22);
+    addText(dl, LAYOUT_FC_LABEL_X, LAYOUT_FC_ROW_WIND_Y, "WIND", FONT_UBUNTU_22);
+    addText(dl, LAYOUT_FC_LABEL_X, LAYOUT_FC_ROW_GUST_Y, "GUST", FONT_UBUNTU_22);
+    addText(dl, LAYOUT_FC_LABEL_X, LAYOUT_FC_ROW_DIR_Y,  "DIR",  FONT_UBUNTU_22);
+    addText(dl, LAYOUT_FC_LABEL_X, LAYOUT_FC_ROW_SEA_Y,  "SEA",  FONT_UBUNTU_22);
+
+    // Segment labels
+    addText(dl, 190, LAYOUT_FC_SEG_Y, "OBS", FONT_UBUNTU_22);
+    addText(dl, 530, LAYOUT_FC_SEG_Y, "1H",  FONT_UBUNTU_22);
+    addText(dl, 978, LAYOUT_FC_SEG_Y, "2H",  FONT_UBUNTU_22);
+    addText(dl, 1576, LAYOUT_FC_SEG_Y, "4H", FONT_UBUNTU_22);
+
+    // Column values
+    for (int i = 0; i < FORECAST_COLS; i++) {
+        const ForecastColumn& col = grid.cols[i];
+        if (!col.valid) continue;
+
+        int x = FC_COL_X[i];
+
+        // Hour
+        snprintf(fc_cells[i][0], 8, "%02d", col.hour);
+        addText(dl, x, LAYOUT_FC_ROW_HR_Y, fc_cells[i][0], FONT_DSEG7_22);
+
+        // Wind (integer m/s)
+        snprintf(fc_cells[i][1], 8, "%d", (int)(col.wind + 0.5f));
+        addText(dl, x, LAYOUT_FC_ROW_WIND_Y, fc_cells[i][1], FONT_DSEG7_22);
+
+        // Gust
+        snprintf(fc_cells[i][2], 8, "%d", (int)(col.gust + 0.5f));
+        addText(dl, x, LAYOUT_FC_ROW_GUST_Y, fc_cells[i][2], FONT_DSEG7_22);
+
+        // Direction
+        snprintf(fc_cells[i][3], 8, "%d", col.dir);
+        addText(dl, x, LAYOUT_FC_ROW_DIR_Y, fc_cells[i][3], FONT_DSEG7_22);
+
+        // Sea level
+        formatSea(fc_cells[i][4], 8, col.sea);
+        addText(dl, x, LAYOUT_FC_ROW_SEA_Y, fc_cells[i][4], FONT_DSEG7_22);
+    }
+}
+
 DrawList buildLayout(const DisplayState& state) {
     DrawList dl = {};
 
@@ -214,6 +269,9 @@ DrawList buildLayout(const DisplayState& state) {
         buildElectricals(dl, state);
         buildFmi(dl, state);
         buildRuuvi(dl, state);
+        if (state.forecast) {
+            buildForecast(dl, *state.forecast);
+        }
         Log_info("Layout: normal mode, %d draw cmds", dl.count);
     }
 

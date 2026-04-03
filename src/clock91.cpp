@@ -190,6 +190,7 @@ void clock91_cycle(void) {
     // Build base state from clock
     DisplayState state = clock91_build_state();
     ForecastGrid grid = {};
+    state.forecast = &grid;
 
     // Fetch FMI data if WiFi is up
     if (wifi_ok) {
