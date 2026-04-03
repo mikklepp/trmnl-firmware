@@ -199,10 +199,13 @@ void clock91_cycle(void) {
     time_t now = time(NULL);
     localtime_r(&now, &ti);
 
-    bool full = (ti.tm_min % 15 == 0);
+    esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
+    bool cold_boot = (wakeup == ESP_SLEEP_WAKEUP_UNDEFINED);
+    bool full = cold_boot || (ti.tm_min % 15 == 0);
 
-    Log_info("clock91: %02d:%02d %s cycle",
-             ti.tm_hour, ti.tm_min, full ? "FULL" : "partial");
+    Log_info("clock91: %02d:%02d %s cycle%s",
+             ti.tm_hour, ti.tm_min, full ? "FULL" : "partial",
+             cold_boot ? " (cold boot)" : "");
 
     if (full) {
         clock91_full_cycle();
