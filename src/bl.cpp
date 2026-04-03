@@ -676,6 +676,16 @@ void bl_init(void)
 
   Log_info("init time: %ld us", init_time);
 
+#ifdef CLOCK91_MODE
+  // clock91 mode: run our wake cycle, then sleep.
+  // At this point we have: serial, pins, display, filesystem, preferences, IQS323.
+  Log_info("clock91 mode — branching from TRMNL flow");
+  clock91_cycle();
+  display_sleep();
+  goToSleep();
+  return;  // never reached, goToSleep doesn't return
+#endif
+
 #else
   Log_info("preferences start");
   bool res = preferences.begin("data", false);
@@ -835,15 +845,6 @@ void bl_init(void)
   iqs323_task_i2c_lock();
   display_init();
   iqs323_task_i2c_unlock();
-
-#ifdef CLOCK91_MODE
-  // clock91 mode: run our wake cycle, then sleep
-  Log_info("clock91 mode — branching from TRMNL flow");
-  clock91_cycle();
-  display_sleep();
-  goToSleep();
-  return;  // never reached, goToSleep doesn't return
-#endif
   filesystem_init();
 #endif
 

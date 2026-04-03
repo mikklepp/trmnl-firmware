@@ -104,17 +104,17 @@ static void buildElectricals(DrawList& dl, const DisplayState& s) {
     int y = LAYOUT_ELEC_Y0;
 
     formatOrDash(buf_solar, sizeof(buf_solar), s.solar_w, formatTemp);
-    if (!isnan(s.solar_w)) formatInt(buf_solar, sizeof(buf_solar), (int)s.solar_w);
+    if (!std::isnan(s.solar_w)) formatInt(buf_solar, sizeof(buf_solar), (int)s.solar_w);
     addDataRow(dl, LAYOUT_RIGHT_DATA_X, y, "SOLAR", buf_solar, "W");
     y += LAYOUT_ELEC_DY;
 
     formatOrDash(buf_charger, sizeof(buf_charger), s.charger_w, formatTemp);
-    if (!isnan(s.charger_w)) formatInt(buf_charger, sizeof(buf_charger), (int)s.charger_w);
+    if (!std::isnan(s.charger_w)) formatInt(buf_charger, sizeof(buf_charger), (int)s.charger_w);
     addDataRow(dl, LAYOUT_RIGHT_DATA_X, y, "CHARGER", buf_charger, "W");
     y += LAYOUT_ELEC_DY;
 
     formatOrDash(buf_battery, sizeof(buf_battery), s.battery_w, formatTemp);
-    if (!isnan(s.battery_w)) formatInt(buf_battery, sizeof(buf_battery), (int)s.battery_w);
+    if (!std::isnan(s.battery_w)) formatInt(buf_battery, sizeof(buf_battery), (int)s.battery_w);
     addDataRow(dl, LAYOUT_RIGHT_DATA_X, y, "BATTERY", buf_battery, "W");
     y += LAYOUT_ELEC_DY;
 
@@ -139,12 +139,12 @@ static void buildFmi(DrawList& dl, const DisplayState& s) {
     int y = LAYOUT_FMI_Y0;
 
     formatOrDash(buf_wind, sizeof(buf_wind), s.wind_speed, formatTemp);
-    if (!isnan(s.wind_speed)) formatInt(buf_wind, sizeof(buf_wind), (int)s.wind_speed);
+    if (!std::isnan(s.wind_speed)) formatInt(buf_wind, sizeof(buf_wind), (int)s.wind_speed);
     addDataRow(dl, LAYOUT_LEFT_DATA_X, y, "WIND", buf_wind, "m/s");
     y += LAYOUT_FMI_DY;
 
     formatOrDash(buf_gust, sizeof(buf_gust), s.wind_gust, formatTemp);
-    if (!isnan(s.wind_gust)) formatInt(buf_gust, sizeof(buf_gust), (int)s.wind_gust);
+    if (!std::isnan(s.wind_gust)) formatInt(buf_gust, sizeof(buf_gust), (int)s.wind_gust);
     addDataRow(dl, LAYOUT_LEFT_DATA_X, y, "GUST", buf_gust, "m/s");
     y += LAYOUT_FMI_DY;
 
@@ -160,7 +160,7 @@ static void buildRuuvi(DrawList& dl, const DisplayState& s) {
     y += LAYOUT_RUUVI_DY;
 
     formatOrDash(buf_saloon_h, sizeof(buf_saloon_h), s.saloon_humidity, formatTemp);
-    if (!isnan(s.saloon_humidity)) formatPct(buf_saloon_h, sizeof(buf_saloon_h), (int)s.saloon_humidity);
+    if (!std::isnan(s.saloon_humidity)) formatPct(buf_saloon_h, sizeof(buf_saloon_h), (int)s.saloon_humidity);
     addDataRow(dl, LAYOUT_RIGHT_DATA_X, y, "", buf_saloon_h, "%");
     y += LAYOUT_RUUVI_DY;
 

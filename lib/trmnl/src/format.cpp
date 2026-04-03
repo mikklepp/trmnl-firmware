@@ -51,7 +51,7 @@ void formatDow(char* buf, size_t buflen, int wday) {
 }
 
 bool formatOrDash(char* buf, size_t buflen, float value, void (*formatter)(char*, size_t, float)) {
-    if (isnan(value)) {
+    if (std::isnan(value)) {
         snprintf(buf, buflen, "--");
         return true;
     }

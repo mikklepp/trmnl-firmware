@@ -2,6 +2,7 @@
 #include "trmnl_log.h"
 #include <cstring>
 #include <cstdlib>
+#include <cmath>
 
 // Simple XML scanning — no DOM, no SAX library.
 // Finds <wml2:MeasurementTimeseries> blocks and extracts <wml2:value> elements.
@@ -111,7 +112,7 @@ FmiObservations extractObservations(const FmiParseResult& parsed) {
     obs.temperature = fmiLastValue(parsed.params[0]);
     obs.wind_speed = fmiLastValue(parsed.params[1]);
     obs.wind_gust = fmiLastValue(parsed.params[2]);
-    obs.wind_dir = isnan(fmiLastValue(parsed.params[3])) ? -1 : (int)fmiLastValue(parsed.params[3]);
+    obs.wind_dir = std::isnan(fmiLastValue(parsed.params[3])) ? -1 : (int)fmiLastValue(parsed.params[3]);
     obs.humidity = fmiLastValue(parsed.params[4]);
     obs.pressure = fmiLastValue(parsed.params[5]);
     obs.valid = true;
@@ -143,7 +144,7 @@ FmiForecastArrays extractWindForecast(const FmiParseResult& parsed) {
     for (int i = 0; i < fc.count; i++) {
         fc.wind[i] = wind_ts.values[i];
         fc.gust[i] = gust_ts.values[i];
-        fc.dir[i] = isnan(dir_ts.values[i]) ? 0 : (int)dir_ts.values[i];
+        fc.dir[i] = std::isnan(dir_ts.values[i]) ? 0 : (int)dir_ts.values[i];
     }
 
     fc.valid = (fc.count > 0);
