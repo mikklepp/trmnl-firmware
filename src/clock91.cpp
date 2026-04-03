@@ -186,14 +186,52 @@ static void clock91_partial_cycle(void) {
     renderClockPartial(ti.tm_hour, ti.tm_min);
 }
 
+// ── Gesture handling ──
+
+static bool clock91_handle_gesture(Clock91Gesture gesture) {
+    if (gesture == CLOCK91_GESTURE_NONE) return false;
+
+    int station_index = preferences.getUInt("station_idx", 0);
+    bool changed = false;
+
+    switch (gesture) {
+    case CLOCK91_GESTURE_PREV:
+        station_index = (station_index - 1 + STATION_COUNT) % STATION_COUNT;
+        preferences.putUInt("station_idx", station_index);
+        Log_info("clock91: station prev -> %d (%s)",
+                 station_index, STATIONS[station_index].name);
+        changed = true;
+        break;
+
+    case CLOCK91_GESTURE_NEXT:
+        station_index = (station_index + 1) % STATION_COUNT;
+        preferences.putUInt("station_idx", station_index);
+        Log_info("clock91: station next -> %d (%s)",
+                 station_index, STATIONS[station_index].name);
+        changed = true;
+        break;
+
+    case CLOCK91_GESTURE_TAP_MIDDLE:
+        // TODO: timer start/cancel
+        Log_info("clock91: middle tap (timer not yet implemented)");
+        break;
+
+    default:
+        break;
+    }
+
+    return changed;
+}
+
 // ── Entry point ──
 
-void clock91_cycle(void) {
-    // Set timezone before any localtime calls
+void clock91_cycle(Clock91Gesture gesture) {
     setenv("TZ", TIMEZONE, 1);
     tzset();
 
     render_init();
+
+    bool station_changed = clock91_handle_gesture(gesture);
 
     struct tm ti;
     time_t now = time(NULL);
@@ -201,11 +239,12 @@ void clock91_cycle(void) {
 
     esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
     bool cold_boot = (wakeup == ESP_SLEEP_WAKEUP_UNDEFINED);
-    bool full = cold_boot || (ti.tm_min % 15 == 0);
+    bool full = cold_boot || station_changed || (ti.tm_min % 15 == 0);
 
-    Log_info("clock91: %02d:%02d %s cycle%s",
+    Log_info("clock91: %02d:%02d %s cycle%s%s",
              ti.tm_hour, ti.tm_min, full ? "FULL" : "partial",
-             cold_boot ? " (cold boot)" : "");
+             cold_boot ? " (cold boot)" : "",
+             station_changed ? " (station change)" : "");
 
     if (full) {
         clock91_full_cycle();
