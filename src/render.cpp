@@ -118,12 +118,106 @@ void renderClockUpdate(int hour, int minute) {
     Log_info("Render: clock update %s (rows %d-%d)", buf, y_start, y_end);
 }
 
-void renderTimerFrame(const DrawList& dl) {
+// ── RLE bitmap blitter ──
+// Decodes RLE-compressed 1BPP data and blits onto the framebuffer.
+// White pixels (1) are transparent (skipped), black pixels (0) are drawn.
+
+#include "coffee_cup.h"
+
+static void blitRLE1BPP(const uint8_t* rle, int rle_len,
+                         int dst_x, int dst_y, int img_w, int img_h, int stride) {
+    // Decode RLE into a row buffer, blit row by row
+    int src_pos = 0;   // position in decoded stream (byte index)
+    int rle_idx = 0;   // position in RLE data
+
+    int total_bytes = stride * img_h;
+    int row = 0;
+    int col_byte = 0;
+
+    while (rle_idx < rle_len && src_pos < total_bytes) {
+        uint8_t cmd = rle[rle_idx++];
+
+        if (cmd <= 0x7F) {
+            // Run: repeat next byte (cmd+1) times
+            int count = cmd + 1;
+            uint8_t val = rle[rle_idx++];
+            for (int i = 0; i < count && src_pos < total_bytes; i++) {
+                // Blit this byte (8 pixels)
+                if (val != 0xFF) {  // skip all-white bytes
+                    for (int bit = 0; bit < 8; bit++) {
+                        int px = col_byte * 8 + bit;
+                        if (px < img_w && !(val & (0x80 >> bit))) {
+                            // Black pixel — draw it
+                            bbep.drawPixelFast(dst_x + px, dst_y + row, BBEP_BLACK);
+                        }
+                    }
+                }
+                src_pos++;
+                col_byte++;
+                if (col_byte >= stride) {
+                    col_byte = 0;
+                    row++;
+                }
+            }
+        } else {
+            // Literal: (cmd-128+1) bytes follow
+            int count = cmd - 128 + 1;
+            for (int i = 0; i < count && src_pos < total_bytes; i++) {
+                uint8_t val = rle[rle_idx++];
+                if (val != 0xFF) {
+                    for (int bit = 0; bit < 8; bit++) {
+                        int px = col_byte * 8 + bit;
+                        if (px < img_w && !(val & (0x80 >> bit))) {
+                            bbep.drawPixelFast(dst_x + px, dst_y + row, BBEP_BLACK);
+                        }
+                    }
+                }
+                src_pos++;
+                col_byte++;
+                if (col_byte >= stride) {
+                    col_byte = 0;
+                    row++;
+                }
+            }
+        }
+    }
+}
+
+static const uint8_t* steam_frames[] = {COFFEE_STEAM_0, COFFEE_STEAM_1, COFFEE_STEAM_2};
+static const int steam_lens[] = {COFFEE_STEAM_0_LEN, COFFEE_STEAM_1_LEN, COFFEE_STEAM_2_LEN};
+
+void renderCoffeeCup(int base_x, int base_y, int frame) {
+    // Steam: upper portion, centred horizontally in the column
+    int steam_x = base_x + (597 - COFFEE_STEAM_0_W) / 2;
+    int steam_y = base_y;
+    int f = frame % 3;
+    blitRLE1BPP(steam_frames[f], steam_lens[f],
+                steam_x, steam_y, COFFEE_STEAM_0_W, COFFEE_STEAM_0_H, COFFEE_STEAM_0_STRIDE);
+
+    // Mug: below steam, centred
+    int mug_x = base_x + (597 - COFFEE_MUG_W) / 2;
+    int mug_y = base_y + COFFEE_STEAM_0_H - 40;  // overlap slightly
+    blitRLE1BPP(COFFEE_MUG, COFFEE_MUG_LEN,
+                mug_x, mug_y, COFFEE_MUG_W, COFFEE_MUG_H, COFFEE_MUG_STRIDE);
+}
+
+static void renderTimerCommon(const DrawList& dl, int cup_frame) {
     bbep.setMode(BB_MODE_1BPP);
     bbep.fillScreen(BBEP_WHITE);
     renderDrawList(dl);
+    renderCoffeeCup(LAYOUT_VSPLIT_X, 0, cup_frame);
+}
+
+void renderTimerFrame(const DrawList& dl, int cup_frame) {
+    renderTimerCommon(dl, cup_frame);
     bbep.partialUpdate(false);
-    Log_info("Render: timer frame (%d cmds)", dl.count);
+    Log_info("Render: timer frame (%d cmds, steam %d)", dl.count, cup_frame);
+}
+
+void renderTimerFull(const DrawList& dl, int cup_frame) {
+    renderTimerCommon(dl, cup_frame);
+    bbep.fullUpdate();
+    Log_info("Render: timer full (%d cmds, steam %d)", dl.count, cup_frame);
 }
 
 #else
@@ -134,5 +228,6 @@ void renderPartial(const DrawList&) {}
 void renderFull(const DrawList&) {}
 void renderClockPrepare(int, int) {}
 void renderClockUpdate(int, int) {}
-void renderTimerFrame(const DrawList&) {}
+void renderTimerFull(const DrawList&, int) {}
+void renderTimerFrame(const DrawList&, int) {}
 #endif // BOARD_TRMNL_X

@@ -24,7 +24,8 @@ void renderClockPrepare(int prev_hour, int prev_minute);
 // Render new time into pCurrent and partial-update the clock rows.
 void renderClockUpdate(int hour, int minute);
 
-// Full-screen partial refresh from a DrawList (used for timer mode).
-// Clears framebuffer, renders all commands, partial-updates entire display.
-// Only pixels that differ from pPrevious actually flash on screen.
-void renderTimerFrame(const DrawList& dl);
+// Timer mode rendering (DrawList + coffee cup bitmap at given steam frame).
+// Full: greyscale wipe, used for initial transition into timer mode.
+// Frame: partial update, only changed pixels flash. Used for 1s ticks.
+void renderTimerFull(const DrawList& dl, int cup_frame);
+void renderTimerFrame(const DrawList& dl, int cup_frame);

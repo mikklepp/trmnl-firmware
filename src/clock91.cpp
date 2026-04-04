@@ -275,9 +275,8 @@ static GestureResult clock91_handle_gesture(Clock91Gesture gesture) {
 // Stays awake for the entire countdown. Uses millis() anchoring so
 // e-ink refresh time doesn't accumulate as drift.
 
-// Build a DisplayState for timer mode and render it.
-static void clock91_render_timer_frame(const TimerState& timer,
-                                        uint32_t start_ms, int frame) {
+// Build a timer-mode DisplayState and DrawList.
+static DrawList clock91_build_timer_layout(const TimerState& timer) {
     struct tm ti;
     time_t now = time(NULL);
     localtime_r(&now, &ti);
@@ -288,10 +287,8 @@ static void clock91_render_timer_frame(const TimerState& timer,
     state.timer_active = true;
     state.timer_seconds = timer.remaining;
     state.timer_total = timer.total;
-    state.timer_frame = frame;
 
-    DrawList dl = buildLayout(state);
-    renderTimerFrame(dl);
+    return buildLayout(state);
 }
 
 static void clock91_timer_loop(void) {
@@ -308,18 +305,8 @@ static void clock91_timer_loop(void) {
 
     // Initial render (full refresh for clean transition into timer mode)
     {
-        DisplayState state = {};
-        struct tm ti;
-        time_t now_t = time(NULL);
-        localtime_r(&now_t, &ti);
-        state.hour = ti.tm_hour;
-        state.minute = ti.tm_min;
-        state.timer_active = true;
-        state.timer_seconds = timer.remaining;
-        state.timer_total = timer.total;
-        state.timer_frame = 0;
-        DrawList dl = buildLayout(state);
-        renderFull(dl);
+        DrawList dl = clock91_build_timer_layout(timer);
+        renderTimerFull(dl, 0);
     }
 
     while (timerActive(timer)) {
@@ -336,7 +323,10 @@ static void clock91_timer_loop(void) {
         timer.remaining = remaining;
 
         // Full-screen partial refresh: clock, coffee cup steam, timer digits
-        clock91_render_timer_frame(timer, start_ms, frame);
+        {
+            DrawList dl = clock91_build_timer_layout(timer);
+            renderTimerFrame(dl, frame);
+        }
         frame = (frame + 1) % 3;
 
         // Poll for touch gestures
