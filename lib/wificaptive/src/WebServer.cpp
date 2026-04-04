@@ -1,6 +1,9 @@
 #include "WebServer.h"
 #include <WiFi.h>
 #include <test.h>
+#ifdef CLOCK91_MODE
+#include <Preferences.h>
+#endif
 
 
 
@@ -70,6 +73,51 @@ void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP, WifiOperat
                 String json = testTemperature();
                 request->send(200, "application/json", json);
               });
+
+#ifdef CLOCK91_MODE
+    server.on("/clock91", HTTP_GET, [&](AsyncWebServerRequest *request)
+              {
+                AsyncWebServerResponse *response = request->beginResponse(200, "text/html", CLOCK91_HTML, CLOCK91_HTML_LEN);
+                response->addHeader("Content-Encoding", "gzip");
+                request->send(response);
+              });
+
+    server.on("/clock91/config", HTTP_GET, [](AsyncWebServerRequest *request)
+              {
+                Preferences prefs;
+                prefs.begin("data", true);
+                String json = "{";
+                const char* keys[] = {"v_solar_mac","v_solar_key","v_shunt_mac","v_shunt_key",
+                                       "v_vebus_mac","v_vebus_key","ruuvi_0_mac","ruuvi_1_mac"};
+                for (int i = 0; i < 8; i++) {
+                    String val = prefs.getString(keys[i], "");
+                    if (i > 0) json += ",";
+                    json += "\"" + String(keys[i]) + "\":\"" + val + "\"";
+                }
+                json += "}";
+                prefs.end();
+                request->send(200, "application/json", json);
+              });
+
+    AsyncCallbackJsonWebHandler *clock91Handler = new AsyncCallbackJsonWebHandler("/clock91/config",
+        [](AsyncWebServerRequest *request, JsonVariant &json) {
+            JsonObject data = json.as<JsonObject>();
+            Preferences prefs;
+            prefs.begin("data", false);
+            const char* keys[] = {"v_solar_mac","v_solar_key","v_shunt_mac","v_shunt_key",
+                                   "v_vebus_mac","v_vebus_key","ruuvi_0_mac","ruuvi_1_mac"};
+            for (int i = 0; i < 8; i++) {
+                if (data.containsKey(keys[i])) {
+                    prefs.putString(keys[i], data[keys[i]].as<const char*>());
+                } else {
+                    prefs.remove(keys[i]);
+                }
+            }
+            prefs.end();
+            request->send(200, "application/json", "{\"ok\":true}");
+        });
+    server.addHandler(clock91Handler);
+#endif // CLOCK91_MODE
 
     auto scanGET = server.on("/scan", HTTP_GET, [callbacks](AsyncWebServerRequest *request)
                              {

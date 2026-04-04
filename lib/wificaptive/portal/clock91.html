@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>clock91 BLE Devices</title>
+  <style>
+    body { font: 400 14px 'Calibri', 'Arial'; margin: 0; padding: 20px; }
+    h1 { text-align: center; font-size: 20px; }
+    h2 { font-size: 16px; margin: 18px 0 8px 0; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+    .field { margin-bottom: 10px; }
+    label { display: block; font-size: 14px; margin-bottom: 2px; }
+    input { width: 100%; box-sizing: border-box; padding: 6px; font-size: 14px; font-family: monospace;
+            border: 1px solid #ccc; border-radius: 6px; }
+    input:focus { outline: none; border: 2px solid #F86527; }
+    .hint { font-size: 11px; color: #888; margin-top: 2px; }
+    .buttons { text-align: center; margin-top: 20px; }
+    .button { color: #fff; border: none; padding: 10px 20px; font-size: 16px;
+              border-radius: 5px; cursor: pointer; margin: 5px; }
+    .button-save { background-color: #F86527; }
+    .button-back { background-color: #343a40; }
+    .button:hover { filter: saturate(0.8); }
+    .alert { padding: 10px; margin: 10px 0; border-radius: 4px; display: none; text-align: center; }
+    .alert-ok { background: #d4edda; color: #155724; }
+    .alert-err { background: #f8d7da; color: #721c24; }
+  </style>
+</head>
+<body>
+  <h1>clock91 BLE Devices</h1>
+  <div id="msg" class="alert"></div>
+
+  <h2>Victron SmartSolar</h2>
+  <div class="field">
+    <label>MAC address</label>
+    <input id="v_solar_mac" placeholder="AA:BB:CC:DD:EE:FF">
+  </div>
+  <div class="field">
+    <label>Encryption key</label>
+    <input id="v_solar_key" placeholder="32 hex characters" maxlength="32">
+    <div class="hint">From VictronConnect or VRM portal</div>
+  </div>
+
+  <h2>Victron SmartShunt</h2>
+  <div class="field">
+    <label>MAC address</label>
+    <input id="v_shunt_mac" placeholder="AA:BB:CC:DD:EE:FF">
+  </div>
+  <div class="field">
+    <label>Encryption key</label>
+    <input id="v_shunt_key" placeholder="32 hex characters" maxlength="32">
+  </div>
+
+  <h2>Victron MultiPlus</h2>
+  <div class="field">
+    <label>MAC address</label>
+    <input id="v_vebus_mac" placeholder="AA:BB:CC:DD:EE:FF">
+  </div>
+  <div class="field">
+    <label>Encryption key</label>
+    <input id="v_vebus_key" placeholder="32 hex characters" maxlength="32">
+  </div>
+
+  <h2>Ruuvi Tags</h2>
+  <div class="field">
+    <label>Saloon MAC</label>
+    <input id="ruuvi_0_mac" placeholder="AA:BB:CC:DD:EE:FF">
+  </div>
+  <div class="field">
+    <label>Icebox MAC</label>
+    <input id="ruuvi_1_mac" placeholder="AA:BB:CC:DD:EE:FF">
+  </div>
+
+  <div class="buttons">
+    <button class="button button-save" onclick="save()">Save</button>
+    <button class="button button-back" onclick="location.href='/advanced'">Back</button>
+  </div>
+
+  <script>
+    var fields = [
+      'v_solar_mac','v_solar_key',
+      'v_shunt_mac','v_shunt_key',
+      'v_vebus_mac','v_vebus_key',
+      'ruuvi_0_mac','ruuvi_1_mac'
+    ];
+
+    function load() {
+      fetch('/clock91/config')
+        .then(r => r.json())
+        .then(d => {
+          fields.forEach(f => {
+            if (d[f]) document.getElementById(f).value = d[f];
+          });
+        })
+        .catch(() => {});
+    }
+
+    function save() {
+      var data = {};
+      fields.forEach(f => {
+        var v = document.getElementById(f).value.trim();
+        if (v) data[f] = v;
+      });
+      fetch('/clock91/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+      })
+      .then(r => {
+        if (r.ok) showMsg('Saved.', 'ok');
+        else showMsg('Save failed.', 'err');
+      })
+      .catch(() => showMsg('Save failed.', 'err'));
+    }
+
+    function showMsg(text, type) {
+      var m = document.getElementById('msg');
+      m.textContent = text;
+      m.className = 'alert alert-' + type;
+      m.style.display = 'block';
+      setTimeout(() => m.style.display = 'none', 3000);
+    }
+
+    load();
+  </script>
+</body>
+</html>
