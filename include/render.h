@@ -24,6 +24,7 @@ void renderClockPrepare(int prev_hour, int prev_minute);
 // Render new time into pCurrent and partial-update the clock rows.
 void renderClockUpdate(int hour, int minute);
 
-// Partial refresh of timer countdown area (M:SS + progress bar).
-// remaining/total in seconds. Redraws the timer zone (y=680→1404).
-void renderTimerPartial(int remaining, int total);
+// Full-screen partial refresh from a DrawList (used for timer mode).
+// Clears framebuffer, renders all commands, partial-updates entire display.
+// Only pixels that differ from pPrevious actually flash on screen.
+void renderTimerFrame(const DrawList& dl);

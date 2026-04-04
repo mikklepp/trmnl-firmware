@@ -254,6 +254,119 @@ static void buildForecast(DrawList& dl, const ForecastGrid& grid) {
     }
 }
 
+// ── Coffee cup pixel art (timer decoration, 3-frame steam animation) ──
+//
+// Designed for ~300px wide × 350px tall cup body + handle,
+// with ~200px of steam above. Total bounding box ~300×550.
+// Coordinates are relative to (base_x, base_y) = top-left of area.
+// The cup is centered horizontally in the 597px-wide region.
+//
+// Style: bold, utilitarian silhouette — nautical chart symbol aesthetic.
+
+void buildCoffeeCup(DrawList& dl, int bx, int by, int frame) {
+    // Center the ~300px cup in the 597px-wide area
+    const int cx = bx + 250;   // cup body center x (shifted left to make room for handle)
+    const int cup_top = by + 200;  // top of cup body (steam goes above)
+
+    // ── Cup body (trapezoidal mug, built from filled rects) ──
+    // Slightly tapered: wider at top, narrower at bottom.
+    // Top width ~220px, bottom width ~180px, height ~260px.
+
+    const int cup_w_top = 220;
+    const int cup_w_bot = 180;
+    const int cup_h = 260;
+    const int wall = 16;  // wall thickness
+
+    // Build the cup as a series of horizontal slices (filled rects)
+    // for the taper. We'll do it in 4 bands for efficiency.
+    const int band_h = cup_h / 4;  // 65px per band
+
+    for (int i = 0; i < 4; i++) {
+        int t = i;  // 0=top, 3=bottom
+        float frac = (float)t / 3.0f;
+        int w = cup_w_top - (int)((cup_w_top - cup_w_bot) * frac);
+        int next_frac_w = cup_w_top - (int)((cup_w_top - cup_w_bot) * ((float)(t+1) / 3.0f));
+        if (i == 3) next_frac_w = cup_w_bot;
+
+        int x_left = cx - w / 2;
+        int y_top = cup_top + i * band_h;
+
+        // Left wall
+        int next_x_left = cx - next_frac_w / 2;
+        int left_x = (x_left < next_x_left) ? x_left : next_x_left;
+        int left_w = wall + ((x_left > next_x_left) ? (x_left - next_x_left) : (next_x_left - x_left));
+        addRect(dl, left_x, y_top, left_w, band_h);
+
+        // Right wall
+        int x_right = cx + w / 2 - wall;
+        int next_x_right = cx + next_frac_w / 2 - wall;
+        int right_x = (x_right < next_x_right) ? next_x_right : x_right;
+        addRect(dl, right_x, y_top, left_w, band_h);
+    }
+
+    // Top rim (thick horizontal bar across full top width)
+    addRect(dl, cx - cup_w_top / 2, cup_top, cup_w_top, wall);
+
+    // Bottom (thick horizontal bar across bottom width)
+    addRect(dl, cx - cup_w_bot / 2, cup_top + cup_h - wall, cup_w_bot, wall + 4);
+
+    // ── Handle (right side, D-shaped, built from thick lines) ──
+    const int handle_thick = 14;
+    const int hx = cx + cup_w_top / 2;  // attach point x (right edge of cup)
+    const int hy1 = cup_top + 50;       // top attachment
+    const int hy2 = cup_top + 200;      // bottom attachment
+    const int h_extend = 60;            // how far right the handle goes
+
+    // Top horizontal
+    addLine(dl, hx, hy1, hx + h_extend, hy1, handle_thick);
+    // Right vertical
+    addLine(dl, hx + h_extend, hy1, hx + h_extend, hy2, handle_thick);
+    // Bottom horizontal
+    addLine(dl, hx, hy2, hx + h_extend, hy2, handle_thick);
+
+    // ── Saucer / base plate ──
+    const int saucer_w = 280;
+    const int saucer_h = 14;
+    const int saucer_y = cup_top + cup_h + 6;
+    addRect(dl, cx - saucer_w / 2, saucer_y, saucer_w, saucer_h);
+
+    // ── Steam (3 variants, wavy vertical lines above the cup) ──
+    // Three steam columns, each a series of short line segments
+    // making a sine-like wave. The phase shifts per frame.
+    const int steam_h = 170;       // total steam height
+    const int steam_base = cup_top - 15;  // just above rim
+    const int steam_thick = 8;
+    const int n_seg = 6;           // segments per steam line
+    const int seg_h = steam_h / n_seg;
+    const int amplitude = 18;      // wave amplitude in pixels
+
+    // Three steam column center positions
+    const int steam_cx[3] = { cx - 55, cx, cx + 55 };
+    // Phase offset per column (in segments) to stagger the waves
+    const int col_phase[3] = { 0, 2, 4 };
+
+    for (int col = 0; col < 3; col++) {
+        int scx = steam_cx[col];
+        int phase = col_phase[col] + frame * 2;  // shift by 2 segments per frame
+
+        for (int s = 0; s < n_seg; s++) {
+            int y1 = steam_base - s * seg_h;
+            int y2 = steam_base - (s + 1) * seg_h;
+            // Alternating left-right offsets based on segment + phase
+            int dir1 = ((s + phase) % 2 == 0) ? 1 : -1;
+            int dir2 = ((s + 1 + phase) % 2 == 0) ? 1 : -1;
+            int x1 = scx + dir1 * amplitude;
+            int x2 = scx + dir2 * amplitude;
+
+            // Fade: thinner at top
+            int thick = steam_thick - (s * steam_thick) / (n_seg + 2);
+            if (thick < 3) thick = 3;
+
+            addLine(dl, x1, y1, x2, y2, thick);
+        }
+    }
+}
+
 DrawList buildLayout(const DisplayState& state) {
     DrawList dl = {};
 
@@ -263,7 +376,9 @@ DrawList buildLayout(const DisplayState& state) {
     if (state.timer_active) {
         buildTimerStructure(dl);
         buildTimer(dl, state);
-        Log_info("Layout: timer mode, %ds remaining, %d draw cmds", state.timer_seconds, dl.count);
+        buildCoffeeCup(dl, LAYOUT_VSPLIT_X, 0, state.timer_frame);
+        Log_info("Layout: timer mode, %ds remaining, frame %d, %d draw cmds",
+                 state.timer_seconds, state.timer_frame, dl.count);
     } else {
         buildNormalStructure(dl);
         buildElectricals(dl, state);

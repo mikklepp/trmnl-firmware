@@ -118,39 +118,12 @@ void renderClockUpdate(int hour, int minute) {
     Log_info("Render: clock update %s (rows %d-%d)", buf, y_start, y_end);
 }
 
-void renderTimerPartial(int remaining, int total) {
-    // M:SS format
-    char buf[8];
-    int m = remaining / 60;
-    int s = remaining % 60;
-    snprintf(buf, sizeof(buf), "%d:%02d", m, s);
-
-    // Clear and redraw the timer zone (below horizontal divider)
-    int y_start = LAYOUT_HMID_Y;
-    int y_end = LAYOUT_DISPLAY_H;
-    bbep.fillRect(0, y_start, LAYOUT_DISPLAY_W, y_end - y_start, BBEP_WHITE);
-
-    // Timer digits (large, centred)
-    bbep.setFont(fontTable[FONT_DSEG7_340]);
-    bbep.setTextColor(BBEP_BLACK, BBEP_WHITE);
-    bbep.setCursor(LAYOUT_TIMER_X, LAYOUT_TIMER_Y);
-    bbep.print(buf);
-
-    // Progress bar: border
-    bbep.drawRect(LAYOUT_TIMER_BAR_X, LAYOUT_TIMER_BAR_Y,
-                  LAYOUT_TIMER_BAR_W, LAYOUT_TIMER_BAR_H, BBEP_BLACK);
-    // Progress bar: fill proportional to elapsed time
-    if (total > 0) {
-        int elapsed = total - remaining;
-        int fill_w = (int)((long)elapsed * (LAYOUT_TIMER_BAR_W - 4) / total);
-        if (fill_w > 0) {
-            bbep.fillRect(LAYOUT_TIMER_BAR_X + 2, LAYOUT_TIMER_BAR_Y + 2,
-                          fill_w, LAYOUT_TIMER_BAR_H - 4, BBEP_BLACK);
-        }
-    }
-
-    bbep.partialUpdate(false, y_start, y_end);
-    Log_info("Render: timer partial %s (rows %d-%d)", buf, y_start, y_end);
+void renderTimerFrame(const DrawList& dl) {
+    bbep.setMode(BB_MODE_1BPP);
+    bbep.fillScreen(BBEP_WHITE);
+    renderDrawList(dl);
+    bbep.partialUpdate(false);
+    Log_info("Render: timer frame (%d cmds)", dl.count);
 }
 
 #else
@@ -161,5 +134,5 @@ void renderPartial(const DrawList&) {}
 void renderFull(const DrawList&) {}
 void renderClockPrepare(int, int) {}
 void renderClockUpdate(int, int) {}
-void renderTimerPartial(int, int) {}
+void renderTimerFrame(const DrawList&) {}
 #endif // BOARD_TRMNL_X

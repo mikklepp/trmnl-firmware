@@ -67,6 +67,7 @@ struct DisplayState {
     bool timer_active;
     int timer_seconds;     // remaining
     int timer_total;       // for progress bar
+    int timer_frame;       // coffee cup steam animation (0, 1, 2)
 
     // Forecast grid (NULL = no forecast data)
     const ForecastGrid* forecast;
@@ -140,3 +141,8 @@ struct DrawList {
 // Build the draw command list for the current state.
 // Returns the number of commands.
 DrawList buildLayout(const DisplayState& state);
+
+// Build coffee cup pixel art into an existing DrawList.
+// base_x, base_y = top-left corner of the allocated area (597x640).
+// frame = 0, 1, or 2 — selects the steam animation variant.
+void buildCoffeeCup(DrawList& dl, int base_x, int base_y, int frame);

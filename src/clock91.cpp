@@ -275,6 +275,25 @@ static GestureResult clock91_handle_gesture(Clock91Gesture gesture) {
 // Stays awake for the entire countdown. Uses millis() anchoring so
 // e-ink refresh time doesn't accumulate as drift.
 
+// Build a DisplayState for timer mode and render it.
+static void clock91_render_timer_frame(const TimerState& timer,
+                                        uint32_t start_ms, int frame) {
+    struct tm ti;
+    time_t now = time(NULL);
+    localtime_r(&now, &ti);
+
+    DisplayState state = {};
+    state.hour = ti.tm_hour;
+    state.minute = ti.tm_min;
+    state.timer_active = true;
+    state.timer_seconds = timer.remaining;
+    state.timer_total = timer.total;
+    state.timer_frame = frame;
+
+    DrawList dl = buildLayout(state);
+    renderTimerFrame(dl);
+}
+
 static void clock91_timer_loop(void) {
     TimerState timer = {};
     timer.remaining = -1;
@@ -284,11 +303,24 @@ static void clock91_timer_loop(void) {
     touch_pending = false;
     iqs323_task_set_data_callback(on_iqs323_data);
 
-    // Initial full render with timer overlay
-    renderTimerPartial(timer.remaining, timer.total);
-
     uint32_t start_ms = millis();
-    int last_minute = -1;  // track minute changes for clock update
+    int frame = 0;
+
+    // Initial render (full refresh for clean transition into timer mode)
+    {
+        DisplayState state = {};
+        struct tm ti;
+        time_t now_t = time(NULL);
+        localtime_r(&now_t, &ti);
+        state.hour = ti.tm_hour;
+        state.minute = ti.tm_min;
+        state.timer_active = true;
+        state.timer_seconds = timer.remaining;
+        state.timer_total = timer.total;
+        state.timer_frame = 0;
+        DrawList dl = buildLayout(state);
+        renderFull(dl);
+    }
 
     while (timerActive(timer)) {
         // Compute remaining from wall clock (no drift accumulation)
@@ -303,39 +335,26 @@ static void clock91_timer_loop(void) {
         }
         timer.remaining = remaining;
 
-        // Update clock digits when the minute rolls over
-        struct tm ti;
-        time_t now = time(NULL);
-        localtime_r(&now, &ti);
-        if (ti.tm_min != last_minute) {
-            last_minute = ti.tm_min;
-            renderClockUpdate(ti.tm_hour, ti.tm_min);
-        }
-
-        // Render the current second
-        renderTimerPartial(timer.remaining, timer.total);
+        // Full-screen partial refresh: clock, coffee cup steam, timer digits
+        clock91_render_timer_frame(timer, start_ms, frame);
+        frame = (frame + 1) % 3;
 
         // Poll for touch gestures
         iqs323_gesture_events gesture = clock91_poll_gesture();
         if (gesture == IQS323_GESTURE_TAP) {
-            // Middle tap → cancel
             Log_info("clock91: timer cancelled by tap");
             timerCancel(&timer);
             break;
         } else if (gesture == IQS323_GESTURE_SWIPE_POSITIVE
                    || gesture == IQS323_GESTURE_FLICK_POSITIVE) {
-            // Right → next preset, restart
             timerNext(&timer);
             start_ms = millis();
             Log_info("clock91: timer next preset %ds", timer.total);
-            renderTimerPartial(timer.remaining, timer.total);
         } else if (gesture == IQS323_GESTURE_SWIPE_NEGATIVE
                    || gesture == IQS323_GESTURE_FLICK_NEGATIVE) {
-            // Left → previous preset, restart
             timerPrev(&timer);
             start_ms = millis();
             Log_info("clock91: timer prev preset %ds", timer.total);
-            renderTimerPartial(timer.remaining, timer.total);
         }
 
         // Sleep until the next whole second boundary
