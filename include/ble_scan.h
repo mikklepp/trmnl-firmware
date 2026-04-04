@@ -9,6 +9,7 @@
 struct BleScanResult {
     VictronSolar solar;
     VictronShunt shunt;
+    VictronVEBus vebus;
     RuuviData ruuvi_saloon;
     RuuviData ruuvi_icebox;
 };

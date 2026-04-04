@@ -247,7 +247,7 @@ static void clock91_full_cycle(void) {
     // BLE scan (runs after WiFi is off — they share the radio)
     BleScanResult ble = ble_scan_run(10);
     state.solar_w = ble.solar.valid ? ble.solar.pv_power : NAN;
-    state.charger_w = ble.solar.valid ? (ble.solar.battery_voltage * ble.solar.battery_current) : NAN;
+    state.charger_w = ble.vebus.valid ? (ble.vebus.battery_voltage * ble.vebus.battery_current) : NAN;
     state.battery_w = ble.shunt.valid ? (ble.shunt.battery_voltage * ble.shunt.battery_current) : NAN;
     state.engine_v = ble.shunt.valid ? ble.shunt.aux_voltage : NAN;
     state.soc_pct = ble.shunt.valid && !isnan(ble.shunt.soc) ? (int)ble.shunt.soc : -1;

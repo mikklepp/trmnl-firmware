@@ -19,12 +19,15 @@ static const uint16_t RUUVI_COMPANY_ID = 0x0499;
 // Device config loaded from NVS
 static uint8_t victron_solar_key[16] = {};
 static uint8_t victron_shunt_key[16] = {};
+static uint8_t victron_vebus_key[16] = {};
 static std::string victron_solar_mac;
 static std::string victron_shunt_mac;
+static std::string victron_vebus_mac;
 static std::string ruuvi_saloon_mac;
 static std::string ruuvi_icebox_mac;
 static bool has_solar = false;
 static bool has_shunt = false;
+static bool has_vebus = false;
 static bool has_ruuvi_saloon = false;
 static bool has_ruuvi_icebox = false;
 
@@ -70,6 +73,16 @@ static void load_ble_config(void) {
         Log_info("BLE: Victron Shunt configured: %s", victron_shunt_mac.c_str());
     }
 
+    // Victron VE.Bus (MultiPlus): MAC + key
+    String vebus_mac_str = preferences.getString("v_vebus_mac", "");
+    String vebus_key_str = preferences.getString("v_vebus_key", "");
+    if (vebus_mac_str.length() > 0 && vebus_key_str.length() == 32) {
+        victron_vebus_mac = vebus_mac_str.c_str();
+        hex_to_bytes(vebus_key_str.c_str(), victron_vebus_key, 16);
+        has_vebus = true;
+        Log_info("BLE: Victron VE.Bus configured: %s", victron_vebus_mac.c_str());
+    }
+
     // Ruuvi tags: MAC only (no encryption)
     String saloon_mac_str = preferences.getString("ruuvi_0_mac", "");
     if (saloon_mac_str.length() > 0) {
@@ -86,6 +99,7 @@ static void load_ble_config(void) {
     }
 
     devices_expected_mask = (has_solar ? 0x01 : 0) | (has_shunt ? 0x02 : 0)
+                          | (has_vebus ? 0x10 : 0)
                           | (has_ruuvi_saloon ? 0x04 : 0) | (has_ruuvi_icebox ? 0x08 : 0);
     Log_info("BLE: %d devices configured (mask=0x%02X)",
              __builtin_popcount(devices_expected_mask), devices_expected_mask);
@@ -107,6 +121,13 @@ static void handle_victron(const std::string& mac, const uint8_t* mfr, size_t mf
         if (victronDecrypt(mfr, mfr_len, victron_shunt_key, plain, &plain_len)) {
             scan_result.shunt = parseVictronShunt(plain, plain_len);
             if (scan_result.shunt.valid) devices_heard |= 0x02;
+        }
+    }
+
+    if (has_vebus && mac == victron_vebus_mac) {
+        if (victronDecrypt(mfr, mfr_len, victron_vebus_key, plain, &plain_len)) {
+            scan_result.vebus = parseVictronVEBus(plain, plain_len);
+            if (scan_result.vebus.valid) devices_heard |= 0x10;
         }
     }
 }

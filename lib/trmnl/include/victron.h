@@ -42,6 +42,16 @@ struct VictronShunt {
     bool valid;
 };
 
+// Parsed VE.Bus (MultiPlus) data
+struct VictronVEBus {
+    float battery_voltage;  // V
+    float battery_current;  // A (positive = charging, negative = inverting)
+    int ac_in_power;        // W (shore/generator input)
+    int ac_out_power;       // W (AC loads)
+    uint8_t device_state;   // 0=off, 3-5=charging, 8=passthru, 9=inverting
+    bool valid;
+};
+
 // Decrypt a Victron BLE advertisement.
 // mfr_data: full manufacturer-specific data (after company ID 0x02E1)
 // mfr_len: length of manufacturer data
@@ -58,6 +68,9 @@ VictronSolar parseVictronSolar(const uint8_t* decrypted, size_t len);
 
 // Parse decrypted SmartShunt payload
 VictronShunt parseVictronShunt(const uint8_t* decrypted, size_t len);
+
+// Parse decrypted VE.Bus (MultiPlus) payload
+VictronVEBus parseVictronVEBus(const uint8_t* decrypted, size_t len);
 
 // Get the record type from decrypted data (first byte)
 VictronRecordType victronRecordType(const uint8_t* mfr_data, size_t mfr_len);

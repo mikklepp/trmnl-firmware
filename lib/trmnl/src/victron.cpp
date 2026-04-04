@@ -187,6 +187,18 @@ bool victronDecrypt(const uint8_t* mfr_data, size_t mfr_len,
 
 // ── Record parsers ──
 
+// Helper: read N bits from a byte array starting at bit offset (LSB-first)
+static uint32_t read_bits(const uint8_t* data, int bit_offset, int n_bits) {
+    uint32_t val = 0;
+    for (int i = 0; i < n_bits; i++) {
+        int byte_idx = (bit_offset + i) / 8;
+        int bit_idx = (bit_offset + i) % 8;
+        if (data[byte_idx] & (1 << bit_idx))
+            val |= (1u << i);
+    }
+    return val;
+}
+
 // Helper: read little-endian unsigned
 static uint16_t read_u16_le(const uint8_t* p) { return p[0] | (p[1] << 8); }
 static uint32_t read_u32_le(const uint8_t* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24); }
@@ -265,5 +277,48 @@ VictronShunt parseVictronShunt(const uint8_t* d, size_t len) {
     s.valid = true;
     Log_info("Victron Shunt: bat=%.2fV %.3fA aux=%.2fV SoC=%.1f%%",
              s.battery_voltage, s.battery_current, s.aux_voltage, s.soc);
+    return s;
+}
+
+VictronVEBus parseVictronVEBus(const uint8_t* d, size_t len) {
+    VictronVEBus s = {};
+    s.valid = false;
+    if (len < 13) {
+        Log_error("Victron VE.Bus: payload too short (%zu bytes, need 13)", len);
+        return s;
+    }
+
+    // VE.Bus (MultiPlus) decrypted payload — bitfield, LSB-first:
+    //   [0:7]    device_state     u8
+    //   [8:15]   ve_bus_error     u8
+    //   [16:31]  battery_current  s16  (0.1A, positive=charging)
+    //   [32:45]  battery_voltage  u14  (0.01V)
+    //   [46:47]  active_ac_in     u2   (0=AC1, 1=AC2, 2=not connected)
+    //   [48:66]  ac_in_power      s19  (W)
+    //   [67:85]  ac_out_power     s19  (W)
+    //   [86:87]  alarm            u2
+    //   [88:94]  battery_temp     u7   (degC + 40 offset)
+    //   [95:101] soc              u7   (%)
+
+    s.device_state = d[0];
+
+    uint32_t raw_i = read_bits(d, 16, 16);
+    int16_t current_raw = (int16_t)(uint16_t)raw_i;
+
+    uint32_t raw_v = read_bits(d, 32, 14);
+
+    uint32_t raw_ac_in = read_bits(d, 48, 19);
+    int32_t ac_in = sign_extend(raw_ac_in, 19);
+
+    uint32_t raw_ac_out = read_bits(d, 67, 19);
+    int32_t ac_out = sign_extend(raw_ac_out, 19);
+
+    s.battery_voltage = (raw_v == 0x3FFF) ? NAN : raw_v * 0.01f;
+    s.battery_current = (current_raw == 0x7FFF) ? NAN : current_raw * 0.1f;
+    s.ac_in_power = (raw_ac_in == 0x7FFFF) ? 0 : ac_in;
+    s.ac_out_power = (raw_ac_out == 0x7FFFF) ? 0 : ac_out;
+    s.valid = true;
+    Log_info("Victron VE.Bus: bat=%.2fV %.1fA ac_in=%dW ac_out=%dW state=%d",
+             s.battery_voltage, s.battery_current, s.ac_in_power, s.ac_out_power, s.device_state);
     return s;
 }

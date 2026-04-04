@@ -185,6 +185,80 @@ void test_parse_shunt_soc_unavailable(void) {
     TEST_ASSERT_TRUE(isnan(s.soc));
 }
 
+// ── VE.Bus (MultiPlus) parser tests ──
+
+// Helper: set bits in a byte array (LSB-first, matching the parser)
+static void set_bits(uint8_t* data, int bit_offset, int n_bits, uint32_t val) {
+    for (int i = 0; i < n_bits; i++) {
+        int byte_idx = (bit_offset + i) / 8;
+        int bit_idx = (bit_offset + i) % 8;
+        if (val & (1u << i))
+            data[byte_idx] |= (1 << bit_idx);
+        else
+            data[byte_idx] &= ~(1 << bit_idx);
+    }
+}
+
+void test_parse_vebus_charging(void) {
+    // MultiPlus charging from shore: 28.4V, 15.2A, AC in 500W, AC out 200W
+    uint8_t payload[13] = {};
+    set_bits(payload, 0, 8, 0x03);      // device_state: bulk charging
+    set_bits(payload, 8, 8, 0x00);      // error: none
+    set_bits(payload, 16, 16, 152);     // battery_current: 152 = 15.2A (charging)
+    set_bits(payload, 32, 14, 2840);    // battery_voltage: 2840 = 28.40V
+    set_bits(payload, 46, 2, 0);        // active_ac_in: AC_IN_1
+    set_bits(payload, 48, 19, 500);     // ac_in_power: 500W
+    set_bits(payload, 67, 19, 200);     // ac_out_power: 200W
+
+    VictronVEBus s = parseVictronVEBus(payload, 13);
+    TEST_ASSERT_TRUE(s.valid);
+    TEST_ASSERT_EQUAL_INT(0x03, s.device_state);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 28.40f, s.battery_voltage);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 15.2f, s.battery_current);
+    TEST_ASSERT_EQUAL_INT(500, s.ac_in_power);
+    TEST_ASSERT_EQUAL_INT(200, s.ac_out_power);
+}
+
+void test_parse_vebus_inverting(void) {
+    // MultiPlus inverting: 24.8V, -12.5A (discharging), AC out 300W, no AC in
+    uint8_t payload[13] = {};
+    set_bits(payload, 0, 8, 0x09);      // device_state: inverting
+    set_bits(payload, 16, 16, (uint16_t)(int16_t)(-125)); // -12.5A
+    set_bits(payload, 32, 14, 2480);    // 24.80V
+    set_bits(payload, 46, 2, 2);        // active_ac_in: not connected
+    set_bits(payload, 48, 19, 0);       // ac_in: 0W
+    set_bits(payload, 67, 19, 300);     // ac_out: 300W
+
+    VictronVEBus s = parseVictronVEBus(payload, 13);
+    TEST_ASSERT_TRUE(s.valid);
+    TEST_ASSERT_EQUAL_INT(0x09, s.device_state);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 24.80f, s.battery_voltage);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, -12.5f, s.battery_current);
+    TEST_ASSERT_EQUAL_INT(0, s.ac_in_power);
+    TEST_ASSERT_EQUAL_INT(300, s.ac_out_power);
+}
+
+void test_parse_vebus_unavailable(void) {
+    uint8_t payload[13] = {};
+    set_bits(payload, 16, 16, 0x7FFF);  // current: unavailable
+    set_bits(payload, 32, 14, 0x3FFF);  // voltage: unavailable
+    set_bits(payload, 48, 19, 0x7FFFF); // ac_in: unavailable
+    set_bits(payload, 67, 19, 0x7FFFF); // ac_out: unavailable
+
+    VictronVEBus s = parseVictronVEBus(payload, 13);
+    TEST_ASSERT_TRUE(s.valid);
+    TEST_ASSERT_TRUE(isnan(s.battery_voltage));
+    TEST_ASSERT_TRUE(isnan(s.battery_current));
+    TEST_ASSERT_EQUAL_INT(0, s.ac_in_power);
+    TEST_ASSERT_EQUAL_INT(0, s.ac_out_power);
+}
+
+void test_parse_vebus_too_short(void) {
+    uint8_t payload[8] = {};
+    VictronVEBus s = parseVictronVEBus(payload, 8);
+    TEST_ASSERT_FALSE(s.valid);
+}
+
 void test_record_type(void) {
     uint8_t mfr[] = {0x02, 0x00, 0x00};
     TEST_ASSERT_EQUAL_INT(VICTRON_BATTERY_MONITOR, victronRecordType(mfr, 3));
@@ -201,6 +275,10 @@ int main(int argc, char **argv) {
     RUN_TEST(test_parse_shunt_basic);
     RUN_TEST(test_parse_shunt_positive_current);
     RUN_TEST(test_parse_shunt_soc_unavailable);
+    RUN_TEST(test_parse_vebus_charging);
+    RUN_TEST(test_parse_vebus_inverting);
+    RUN_TEST(test_parse_vebus_unavailable);
+    RUN_TEST(test_parse_vebus_too_short);
     RUN_TEST(test_record_type);
     UNITY_END();
     return 0;
