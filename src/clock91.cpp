@@ -269,6 +269,7 @@ static void clock91_timer_loop(void) {
     renderTimerPartial(timer.remaining, timer.total);
 
     uint32_t start_ms = millis();
+    int last_minute = -1;  // track minute changes for clock update
 
     while (timerActive(timer)) {
         // Compute remaining from wall clock (no drift accumulation)
@@ -282,6 +283,15 @@ static void clock91_timer_loop(void) {
             break;
         }
         timer.remaining = remaining;
+
+        // Update clock digits when the minute rolls over
+        struct tm ti;
+        time_t now = time(NULL);
+        localtime_r(&now, &ti);
+        if (ti.tm_min != last_minute) {
+            last_minute = ti.tm_min;
+            renderClockPartial(ti.tm_hour, ti.tm_min);
+        }
 
         // Render the current second
         renderTimerPartial(timer.remaining, timer.total);
