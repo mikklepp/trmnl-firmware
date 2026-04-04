@@ -81,24 +81,41 @@ void renderFull(const DrawList& dl) {
     Log_info("Render: full refresh done");
 }
 
-void renderClockPartial(int hour, int minute) {
+void renderClockPrepare(int prev_hour, int prev_minute) {
+    // After deep sleep, pPrevious is lost. Reconstruct it by rendering the
+    // previous time into the framebuffer and copying to pPrevious.
+    // Everything outside the clock digits is white, so the e-ink won't
+    // touch those pixels (no diff = no flash).
     char buf[8];
-    snprintf(buf, sizeof(buf), "%02d:%02d", hour, minute);
-
-    // Clear the clock digit area and redraw
-    int y_start = LAYOUT_CLOCK_Y;
-    int y_end = LAYOUT_CLOCK_Y + 380;  // 340px font + margin
-    bbep.fillRect(LAYOUT_CLOCK_X, y_start,
-                  LAYOUT_VSPLIT_X - LAYOUT_CLOCK_X, y_end - y_start,
-                  BBEP_WHITE);
-
+    bbep.setMode(BB_MODE_1BPP);
+    bbep.fillScreen(BBEP_WHITE);
     bbep.setFont(fontTable[FONT_DSEG7_340]);
     bbep.setTextColor(BBEP_BLACK, BBEP_WHITE);
+    snprintf(buf, sizeof(buf), "%02d:%02d", prev_hour, prev_minute);
+    bbep.setCursor(LAYOUT_CLOCK_X, LAYOUT_CLOCK_Y);
+    bbep.print(buf);
+    bbep.backupPlane();
+    bbep.setPreviousMode(BB_MODE_1BPP);
+}
+
+void renderClockUpdate(int hour, int minute) {
+    // Render new time into pCurrent and partial-update the clock rows.
+    // Assumes pPrevious already reflects what's on screen (either from
+    // renderClockPrepare after deep sleep, or from the previous update
+    // while awake).
+    int y_start = LAYOUT_CLOCK_Y;
+    int y_end = LAYOUT_CLOCK_Y + 380;  // 340px font + margin
+    char buf[8];
+
+    bbep.fillScreen(BBEP_WHITE);
+    bbep.setFont(fontTable[FONT_DSEG7_340]);
+    bbep.setTextColor(BBEP_BLACK, BBEP_WHITE);
+    snprintf(buf, sizeof(buf), "%02d:%02d", hour, minute);
     bbep.setCursor(LAYOUT_CLOCK_X, LAYOUT_CLOCK_Y);
     bbep.print(buf);
 
     bbep.partialUpdate(false, y_start, y_end);
-    Log_info("Render: clock partial %s (rows %d-%d)", buf, y_start, y_end);
+    Log_info("Render: clock update %s (rows %d-%d)", buf, y_start, y_end);
 }
 
 void renderTimerPartial(int remaining, int total) {
@@ -142,6 +159,7 @@ void render_init(void) {}
 void renderDrawList(const DrawList&) {}
 void renderPartial(const DrawList&) {}
 void renderFull(const DrawList&) {}
-void renderClockPartial(int, int) {}
+void renderClockPrepare(int, int) {}
+void renderClockUpdate(int, int) {}
 void renderTimerPartial(int, int) {}
 #endif // BOARD_TRMNL_X

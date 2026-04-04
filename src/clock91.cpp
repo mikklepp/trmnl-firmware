@@ -27,6 +27,10 @@ extern IQS323 iqs323;
 // Europe/Helsinki: UTC+2 (winter) / UTC+3 (summer)
 static const char* TIMEZONE = "EET-2EEST,M3.5.0/3,M10.5.0/4";
 
+// Previous time for partial refresh (survives deep sleep)
+static RTC_DATA_ATTR int rtc_prev_hour = -1;
+static RTC_DATA_ATTR int rtc_prev_minute = -1;
+
 // ── Timer touch polling ──
 
 // Volatile flag set by IQS323 data callback from its FreeRTOS task.
@@ -199,6 +203,10 @@ static void clock91_full_cycle(void) {
     DrawList dl = buildLayout(state);
     renderFull(dl);
 
+    // Save time for partial refresh on next wake
+    rtc_prev_hour = ti.tm_hour;
+    rtc_prev_minute = ti.tm_min;
+
     if (wifi_ok) {
         WiFi.disconnect(true);
         WiFi.mode(WIFI_OFF);
@@ -212,7 +220,18 @@ static void clock91_partial_cycle(void) {
     time_t now = time(NULL);
     localtime_r(&now, &ti);
 
-    renderClockPartial(ti.tm_hour, ti.tm_min);
+    if (rtc_prev_hour < 0) {
+        // No previous time (first boot?) — force full cycle instead
+        Log_info("clock91: no previous time, forcing full cycle");
+        clock91_full_cycle();
+        return;
+    }
+
+    renderClockPrepare(rtc_prev_hour, rtc_prev_minute);
+    renderClockUpdate(ti.tm_hour, ti.tm_min);
+
+    rtc_prev_hour = ti.tm_hour;
+    rtc_prev_minute = ti.tm_min;
 }
 
 // ── Gesture handling (normal mode, not timer) ──
@@ -290,7 +309,7 @@ static void clock91_timer_loop(void) {
         localtime_r(&now, &ti);
         if (ti.tm_min != last_minute) {
             last_minute = ti.tm_min;
-            renderClockPartial(ti.tm_hour, ti.tm_min);
+            renderClockUpdate(ti.tm_hour, ti.tm_min);
         }
 
         // Render the current second

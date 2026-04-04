@@ -16,9 +16,13 @@ void renderPartial(const DrawList& dl);
 // Convenience: clear screen, render layout, and do a full refresh.
 void renderFull(const DrawList& dl);
 
-// Partial refresh of clock area only.
-// Clears the clock rectangle, draws time digits, partial updates those rows.
-void renderClockPartial(int hour, int minute);
+// Prepare pPrevious buffer after deep sleep by rendering the previous time.
+// Call once after wake, before renderClockUpdate(). Not needed while awake
+// (e.g. timer loop) since pPrevious is maintained by prior updates.
+void renderClockPrepare(int prev_hour, int prev_minute);
+
+// Render new time into pCurrent and partial-update the clock rows.
+void renderClockUpdate(int hour, int minute);
 
 // Partial refresh of timer countdown area (M:SS + progress bar).
 // remaining/total in seconds. Redraws the timer zone (y=680→1404).
