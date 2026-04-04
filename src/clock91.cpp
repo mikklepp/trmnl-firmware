@@ -21,6 +21,7 @@
 #include "alarm.h"
 #include "timer.h"
 #include "buzzer.h"
+#include "ble_scan.h"
 #include "IQS323.h"
 #include "iqs323_task.h"
 
@@ -235,14 +236,6 @@ static void clock91_full_cycle(void) {
     state.station_name = station.name;
     state.forecast = &grid;
 
-    // BLE defaults (until BLE scanning is added)
-    state.solar_w = NAN;
-    state.charger_w = NAN;
-    state.battery_w = NAN;
-    state.engine_v = NAN;
-    state.saloon_temp = NAN;
-    state.saloon_humidity = NAN;
-    state.icebox_temp = NAN;
     state.timer_active = false;
 
     if (wifi_ok) {
@@ -250,6 +243,17 @@ static void clock91_full_cycle(void) {
         WiFi.disconnect(true);
         WiFi.mode(WIFI_OFF);
     }
+
+    // BLE scan (runs after WiFi is off — they share the radio)
+    BleScanResult ble = ble_scan_run(10);
+    state.solar_w = ble.solar.valid ? ble.solar.pv_power : NAN;
+    state.charger_w = ble.solar.valid ? (ble.solar.battery_voltage * ble.solar.battery_current) : NAN;
+    state.battery_w = ble.shunt.valid ? (ble.shunt.battery_voltage * ble.shunt.battery_current) : NAN;
+    state.engine_v = ble.shunt.valid ? ble.shunt.aux_voltage : NAN;
+    state.soc_pct = ble.shunt.valid && !isnan(ble.shunt.soc) ? (int)ble.shunt.soc : -1;
+    state.saloon_temp = ble.ruuvi_saloon.valid ? ble.ruuvi_saloon.temperature : NAN;
+    state.saloon_humidity = ble.ruuvi_saloon.valid ? ble.ruuvi_saloon.humidity : NAN;
+    state.icebox_temp = ble.ruuvi_icebox.valid ? ble.ruuvi_icebox.temperature : NAN;
 
     clock91_compute_alarm(station, ti, state);
 
