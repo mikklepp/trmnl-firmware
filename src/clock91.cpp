@@ -17,11 +17,40 @@
 #include "forecast.h"
 #include "sunset.h"
 #include "alarm.h"
+#include "timer.h"
+#include "IQS323.h"
+#include "iqs323_task.h"
 
 extern Preferences preferences;
+extern IQS323 iqs323;
 
 // Europe/Helsinki: UTC+2 (winter) / UTC+3 (summer)
 static const char* TIMEZONE = "EET-2EEST,M3.5.0/3,M10.5.0/4";
+
+// ── Timer touch polling ──
+
+// Volatile flag set by IQS323 data callback from its FreeRTOS task.
+static volatile bool touch_pending = false;
+
+static void IRAM_ATTR on_iqs323_data(void) {
+    touch_pending = true;
+}
+
+// Poll for a gesture. Returns the gesture event or IQS323_GESTURE_NONE.
+// Must be called from the main task context (not from the callback).
+static iqs323_gesture_events clock91_poll_gesture(void) {
+    if (!touch_pending) return IQS323_GESTURE_NONE;
+    touch_pending = false;
+
+    iqs323_task_i2c_lock();
+    bool has_gesture = iqs323.getSliderEvent();
+    iqs323_gesture_events gesture = IQS323_GESTURE_NONE;
+    if (has_gesture) {
+        gesture = iqs323.getGestureType();
+    }
+    iqs323_task_i2c_unlock();
+    return gesture;
+}
 
 // ── WiFi ──
 
@@ -186,13 +215,18 @@ static void clock91_partial_cycle(void) {
     renderClockPartial(ti.tm_hour, ti.tm_min);
 }
 
-// ── Gesture handling ──
+// ── Gesture handling (normal mode, not timer) ──
 
-static bool clock91_handle_gesture(Clock91Gesture gesture) {
-    if (gesture == CLOCK91_GESTURE_NONE) return false;
+enum GestureResult {
+    GESTURE_NONE,
+    GESTURE_STATION_CHANGED,
+    GESTURE_TIMER_START,
+};
+
+static GestureResult clock91_handle_gesture(Clock91Gesture gesture) {
+    if (gesture == CLOCK91_GESTURE_NONE) return GESTURE_NONE;
 
     int station_index = preferences.getUInt("station_idx", 0);
-    bool changed = false;
 
     switch (gesture) {
     case CLOCK91_GESTURE_PREV:
@@ -200,27 +234,98 @@ static bool clock91_handle_gesture(Clock91Gesture gesture) {
         preferences.putUInt("station_idx", station_index);
         Log_info("clock91: station prev -> %d (%s)",
                  station_index, STATIONS[station_index].name);
-        changed = true;
-        break;
+        return GESTURE_STATION_CHANGED;
 
     case CLOCK91_GESTURE_NEXT:
         station_index = (station_index + 1) % STATION_COUNT;
         preferences.putUInt("station_idx", station_index);
         Log_info("clock91: station next -> %d (%s)",
                  station_index, STATIONS[station_index].name);
-        changed = true;
-        break;
+        return GESTURE_STATION_CHANGED;
 
     case CLOCK91_GESTURE_TAP_MIDDLE:
-        // TODO: timer start/cancel
-        Log_info("clock91: middle tap (timer not yet implemented)");
-        break;
+        Log_info("clock91: middle tap -> timer start");
+        return GESTURE_TIMER_START;
 
     default:
-        break;
+        return GESTURE_NONE;
+    }
+}
+
+// ── Timer countdown loop ──
+// Stays awake for the entire countdown. Uses millis() anchoring so
+// e-ink refresh time doesn't accumulate as drift.
+
+static void clock91_timer_loop(void) {
+    TimerState timer = {};
+    timer.remaining = -1;
+    timerStart(&timer);
+
+    // Register touch callback so we can detect gestures while looping
+    touch_pending = false;
+    iqs323_task_set_data_callback(on_iqs323_data);
+
+    // Initial full render with timer overlay
+    renderTimerPartial(timer.remaining, timer.total);
+
+    uint32_t start_ms = millis();
+
+    while (timerActive(timer)) {
+        // Compute remaining from wall clock (no drift accumulation)
+        uint32_t elapsed_ms = millis() - start_ms;
+        int elapsed_s = elapsed_ms / 1000;
+        int remaining = timer.total - elapsed_s;
+
+        if (remaining <= 0) {
+            timer.remaining = -1;
+            timer.buzzing = true;
+            break;
+        }
+        timer.remaining = remaining;
+
+        // Render the current second
+        renderTimerPartial(timer.remaining, timer.total);
+
+        // Poll for touch gestures
+        iqs323_gesture_events gesture = clock91_poll_gesture();
+        if (gesture == IQS323_GESTURE_TAP) {
+            // Middle tap → cancel
+            Log_info("clock91: timer cancelled by tap");
+            timerCancel(&timer);
+            break;
+        } else if (gesture == IQS323_GESTURE_SWIPE_POSITIVE
+                   || gesture == IQS323_GESTURE_FLICK_POSITIVE) {
+            // Right → next preset, restart
+            timerNext(&timer);
+            start_ms = millis();
+            Log_info("clock91: timer next preset %ds", timer.total);
+            renderTimerPartial(timer.remaining, timer.total);
+        } else if (gesture == IQS323_GESTURE_SWIPE_NEGATIVE
+                   || gesture == IQS323_GESTURE_FLICK_NEGATIVE) {
+            // Left → previous preset, restart
+            timerPrev(&timer);
+            start_ms = millis();
+            Log_info("clock91: timer prev preset %ds", timer.total);
+            renderTimerPartial(timer.remaining, timer.total);
+        }
+
+        // Sleep until the next whole second boundary
+        uint32_t next_s_ms = start_ms + ((uint32_t)(elapsed_s + 1) * 1000);
+        uint32_t now_ms = millis();
+        if (next_s_ms > now_ms) {
+            delay(next_s_ms - now_ms);
+        }
     }
 
-    return changed;
+    // Unregister callback
+    iqs323_task_set_data_callback(NULL);
+
+    if (timer.buzzing) {
+        Log_info("clock91: timer done — buzzing");
+        // TODO: buzz_timer_pattern() once buzzer driver is built
+    }
+
+    // Return to normal display — caller will do a full or partial cycle
 }
 
 // ── Entry point ──
@@ -231,7 +336,17 @@ void clock91_cycle(Clock91Gesture gesture) {
 
     render_init();
 
-    bool station_changed = clock91_handle_gesture(gesture);
+    GestureResult gr = clock91_handle_gesture(gesture);
+
+    if (gr == GESTURE_TIMER_START) {
+        clock91_timer_loop();
+        // After timer, do a full cycle to restore the normal display
+        clock91_full_cycle();
+        Log_info("clock91: cycle done (post-timer)");
+        return;
+    }
+
+    bool station_changed = (gr == GESTURE_STATION_CHANGED);
 
     struct tm ti;
     time_t now = time(NULL);

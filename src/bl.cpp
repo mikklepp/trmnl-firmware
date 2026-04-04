@@ -2973,9 +2973,23 @@ static void goToSleep(void)
   gpio_deep_sleep_hold_en();
 #endif
 
+#ifdef CLOCK91_MODE
+  // Sleep until the next whole minute to keep the clock aligned.
+  // getTime() returns epoch seconds; sleeping (60 - now%60) lands us
+  // on the next :00 boundary regardless of how long this cycle took.
+  {
+    uint32_t now = getTime();
+    if (now > 0) {
+      time_to_sleep = 60 - (now % 60);
+      if (time_to_sleep < 5)    // too close to the edge — skip to the next minute
+        time_to_sleep += 60;
+    }
+  }
+#else
   if (preferences.isKey(PREFERENCES_SLEEP_TIME_KEY))
     time_to_sleep = preferences.getUInt(PREFERENCES_SLEEP_TIME_KEY, SLEEP_TIME_TO_SLEEP);
-  Log.info("%s [%d]: total awake time - %d ms\r\n", __FILE__, __LINE__, millis() - startup_time); 
+#endif
+  Log.info("%s [%d]: total awake time - %d ms\r\n", __FILE__, __LINE__, millis() - startup_time);
   Log.info("%s [%d]: time to sleep - %d\r\n", __FILE__, __LINE__, time_to_sleep);
   preferences.putUInt(PREFERENCES_LAST_SLEEP_TIME, getTime());
   preferences.end();

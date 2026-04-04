@@ -1,15 +1,27 @@
 #include "timer.h"
 #include "trmnl_log.h"
 
-void timerStart(TimerState* state) {
+static void applyPreset(TimerState* state) {
     int duration = TIMER_PRESETS[state->preset_index];
     state->remaining = duration;
     state->total = duration;
     state->buzzing = false;
+    Log_info("Timer: %ds (preset %d)", duration, state->preset_index);
+}
+
+void timerStart(TimerState* state) {
+    state->preset_index = 0;
+    applyPreset(state);
+}
+
+void timerNext(TimerState* state) {
     state->preset_index = (state->preset_index + 1) % TIMER_PRESET_COUNT;
-    Log_info("Timer: started %ds (preset %d, next preset %d)",
-             duration, (state->preset_index + TIMER_PRESET_COUNT - 1) % TIMER_PRESET_COUNT,
-             state->preset_index);
+    applyPreset(state);
+}
+
+void timerPrev(TimerState* state) {
+    state->preset_index = (state->preset_index - 1 + TIMER_PRESET_COUNT) % TIMER_PRESET_COUNT;
+    applyPreset(state);
 }
 
 void timerCancel(TimerState* state) {

@@ -19,3 +19,7 @@ void renderFull(const DrawList& dl);
 // Partial refresh of clock area only.
 // Clears the clock rectangle, draws time digits, partial updates those rows.
 void renderClockPartial(int hour, int minute);
+
+// Partial refresh of timer countdown area (M:SS + progress bar).
+// remaining/total in seconds. Redraws the timer zone (y=680→1404).
+void renderTimerPartial(int remaining, int total);
