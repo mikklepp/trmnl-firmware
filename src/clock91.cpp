@@ -18,6 +18,7 @@
 #include "sunset.h"
 #include "alarm.h"
 #include "timer.h"
+#include "buzzer.h"
 #include "IQS323.h"
 #include "iqs323_task.h"
 
@@ -360,7 +361,7 @@ static void clock91_timer_loop(void) {
 
     if (timer.buzzing) {
         Log_info("clock91: timer done — buzzing");
-        // TODO: buzz_timer_pattern() once buzzer driver is built
+        buzzer_timer();
     }
 
     // Return to normal display — caller will do a full or partial cycle
@@ -373,6 +374,7 @@ void clock91_cycle(Clock91Gesture gesture) {
     tzset();
 
     render_init();
+    buzzer_init();
 
     GestureResult gr = clock91_handle_gesture(gesture);
 
