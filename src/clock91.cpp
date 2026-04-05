@@ -127,21 +127,17 @@ static void clock91_sleep(uint32_t seconds) {
 // ── WiFi ──
 
 static bool clock91_wifi_connect(void) {
-    WiFi.mode(WIFI_STA);
-
     if (!WifiCaptivePortal.isSaved()) {
-        Log_info("clock91: no WiFi credentials, starting portal");
-        WifiCaptivePortal.startPortal();
-        if (WiFi.status() != WL_CONNECTED) {
-            Log_error("clock91: portal failed, no WiFi");
-            return false;
-        }
-    } else {
-        int res = WifiCaptivePortal.autoConnect();
-        if (!res) {
-            Log_error("clock91: WiFi connect failed (status=%d)", WiFi.status());
-            return false;
-        }
+        Log_info("clock91: no WiFi credentials (use hold gesture to configure)");
+        return false;
+    }
+
+    WiFi.mode(WIFI_STA);
+    int res = WifiCaptivePortal.autoConnect();
+    if (!res) {
+        Log_error("clock91: WiFi connect failed (status=%d)", WiFi.status());
+        WiFi.mode(WIFI_OFF);
+        return false;
     }
 
     Log_info("clock91: WiFi connected, IP=%s RSSI=%d",
