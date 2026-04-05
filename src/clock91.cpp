@@ -61,11 +61,25 @@ static iqs323_gesture_events clock91_poll_gesture(void) {
 // Always slide-mode: wake stub doesn't run in light sleep,
 // so channel-based tap detection isn't available.
 
+// ── Gesture map ──
+//
+// Normal mode:
+//   Swipe/flick left  → PREV  → previous FMI station
+//   Swipe/flick right → NEXT  → next FMI station
+//   Tap               → TAP   → start timer
+//   Hold              → HOLD  → start captive portal (WiFi + BLE config)
+//
+// Timer mode (raw IQS323 events, not translated):
+//   Tap               → cancel timer
+//   Swipe/flick right → next timer preset, restart
+//   Swipe/flick left  → previous timer preset, restart
+
 enum Gesture {
     GESTURE_NONE,
     GESTURE_PREV,
     GESTURE_NEXT,
     GESTURE_TAP,
+    GESTURE_HOLD,
 };
 
 static Gesture translate_gesture(iqs323_gesture_events ev) {
@@ -78,6 +92,8 @@ static Gesture translate_gesture(iqs323_gesture_events ev) {
         return GESTURE_NEXT;
     case IQS323_GESTURE_TAP:
         return GESTURE_TAP;
+    case IQS323_GESTURE_HOLD:
+        return GESTURE_HOLD;
     default:
         return GESTURE_NONE;
     }
@@ -286,10 +302,31 @@ static void clock91_partial_cycle(void) {
 
 // ── Gesture handling ──
 
+// ── Captive portal ──
+
+static void clock91_start_portal(void) {
+    Log_info("clock91: starting captive portal (hold gesture)");
+    buzzer_beep();
+
+    // Portal blocks until WiFi is configured or user cancels
+    WifiCaptivePortal.startPortal();
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Log_info("clock91: portal done, WiFi connected");
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+    } else {
+        Log_info("clock91: portal done, no WiFi");
+    }
+}
+
+// ── Gesture handling ──
+
 enum GestureResult {
     GR_NONE,
     GR_STATION_CHANGED,
     GR_TIMER_START,
+    GR_PORTAL,
 };
 
 static GestureResult clock91_handle_gesture(Gesture gesture) {
@@ -315,6 +352,10 @@ static GestureResult clock91_handle_gesture(Gesture gesture) {
     case GESTURE_TAP:
         Log_info("clock91: tap -> timer start");
         return GR_TIMER_START;
+
+    case GESTURE_HOLD:
+        Log_info("clock91: hold -> captive portal");
+        return GR_PORTAL;
 
     default:
         return GR_NONE;
@@ -451,6 +492,13 @@ void clock91_loop(void) {
         clock91_timer_loop();
         clock91_full_cycle();
         Log_info("clock91: post-timer full cycle done");
+        return;
+    }
+
+    if (gr == GR_PORTAL) {
+        clock91_start_portal();
+        clock91_full_cycle();
+        Log_info("clock91: post-portal full cycle done");
         return;
     }
 
