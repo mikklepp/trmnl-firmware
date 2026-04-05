@@ -300,9 +300,38 @@ static void clock91_partial_cycle(void) {
 
 // ── Captive portal ──
 
+static void clock91_render_setup_screen(void) {
+    // Show setup indicator on screen while portal is active.
+    // Use current time if available, dashes for data fields.
+    struct tm ti;
+    time_t now = time(NULL);
+    localtime_r(&now, &ti);
+
+    DisplayState state = {};
+    state.hour = ti.tm_hour;
+    state.minute = ti.tm_min;
+    state.day = ti.tm_mday;
+    state.month = ti.tm_mon + 1;
+    state.wday = ti.tm_wday;
+    state.station_name = "SETUP  WiFi: TRMNL";
+    state.solar_w = NAN;
+    state.charger_w = NAN;
+    state.battery_w = NAN;
+    state.engine_v = NAN;
+    state.saloon_temp = NAN;
+    state.saloon_humidity = NAN;
+    state.icebox_temp = NAN;
+    state.timer_active = false;
+    state.forecast = NULL;
+
+    DrawList dl = buildLayout(state);
+    renderFull(dl);
+}
+
 static void clock91_start_portal(void) {
     Log_info("clock91: starting captive portal (hold gesture)");
     buzzer_beep();
+    clock91_render_setup_screen();
 
     // Portal blocks until WiFi is configured or user cancels
     WifiCaptivePortal.startPortal();
