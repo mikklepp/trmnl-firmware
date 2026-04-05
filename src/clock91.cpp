@@ -6,6 +6,8 @@
 #include <WiFi.h>
 #include <WifiCaptive.h>
 #include <Preferences.h>
+#include <esp_sleep.h>
+#include <driver/gpio.h>
 #include <trmnl_log.h>
 #include <bl.h>
 #include <config.h>
@@ -28,21 +30,18 @@ extern IQS323 iqs323;
 // Europe/Helsinki: UTC+2 (winter) / UTC+3 (summer)
 static const char* TIMEZONE = "EET-2EEST,M3.5.0/3,M10.5.0/4";
 
-// Previous time for partial refresh (survives deep sleep)
-static RTC_DATA_ATTR int rtc_prev_hour = -1;
-static RTC_DATA_ATTR int rtc_prev_minute = -1;
+// Previous time for partial refresh (survives light sleep — regular static)
+static int prev_hour = -1;
+static int prev_minute = -1;
 
-// ── Timer touch polling ──
+// ── Touch polling ──
 
-// Volatile flag set by IQS323 data callback from its FreeRTOS task.
 static volatile bool touch_pending = false;
 
 static void IRAM_ATTR on_iqs323_data(void) {
     touch_pending = true;
 }
 
-// Poll for a gesture. Returns the gesture event or IQS323_GESTURE_NONE.
-// Must be called from the main task context (not from the callback).
 static iqs323_gesture_events clock91_poll_gesture(void) {
     if (!touch_pending) return IQS323_GESTURE_NONE;
     touch_pending = false;
@@ -55,6 +54,57 @@ static iqs323_gesture_events clock91_poll_gesture(void) {
     }
     iqs323_task_i2c_unlock();
     return gesture;
+}
+
+// ── Gesture translation ──
+// Always slide-mode: wake stub doesn't run in light sleep,
+// so channel-based tap detection isn't available.
+
+enum Gesture {
+    GESTURE_NONE,
+    GESTURE_PREV,
+    GESTURE_NEXT,
+    GESTURE_TAP,
+};
+
+static Gesture translate_gesture(iqs323_gesture_events ev) {
+    switch (ev) {
+    case IQS323_GESTURE_SWIPE_NEGATIVE:
+    case IQS323_GESTURE_FLICK_NEGATIVE:
+        return GESTURE_PREV;
+    case IQS323_GESTURE_SWIPE_POSITIVE:
+    case IQS323_GESTURE_FLICK_POSITIVE:
+        return GESTURE_NEXT;
+    case IQS323_GESTURE_TAP:
+        return GESTURE_TAP;
+    default:
+        return GESTURE_NONE;
+    }
+}
+
+// ── Light sleep ──
+
+static void clock91_sleep(uint32_t seconds) {
+#ifdef DO_NOT_LIGHT_SLEEP
+    delay(seconds * 1000);
+#else
+    // Lock I2C to prevent IQS323 task from being frozen mid-transaction
+    iqs323_task_i2c_lock();
+
+    // Set event mode: IQS323 only fires RDY on touch events (not streaming)
+    iqs323.setEventMode(STOP);
+
+    // Configure wake sources
+    esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL);
+    gpio_wakeup_enable((gpio_num_t)PIN_INTERRUPT, GPIO_INTR_LOW_LEVEL);
+    esp_sleep_enable_gpio_wakeup();
+
+    esp_light_sleep_start();
+
+    // Back to streaming mode
+    iqs323.clearEventMode(STOP);
+    iqs323_task_i2c_unlock();
+#endif
 }
 
 // ── WiFi ──
@@ -197,6 +247,8 @@ static void clock91_full_cycle(void) {
 
     if (wifi_ok) {
         clock91_fetch_fmi(station, state, grid);
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
     }
 
     clock91_compute_alarm(station, ti, state);
@@ -204,14 +256,8 @@ static void clock91_full_cycle(void) {
     DrawList dl = buildLayout(state);
     renderFull(dl);
 
-    // Save time for partial refresh on next wake
-    rtc_prev_hour = ti.tm_hour;
-    rtc_prev_minute = ti.tm_min;
-
-    if (wifi_ok) {
-        WiFi.disconnect(true);
-        WiFi.mode(WIFI_OFF);
-    }
+    prev_hour = ti.tm_hour;
+    prev_minute = ti.tm_min;
 }
 
 // ── Partial cycle: update clock digits only, no WiFi ──
@@ -221,62 +267,58 @@ static void clock91_partial_cycle(void) {
     time_t now = time(NULL);
     localtime_r(&now, &ti);
 
-    if (rtc_prev_hour < 0) {
-        // No previous time (first boot?) — force full cycle instead
+    if (prev_hour < 0) {
         Log_info("clock91: no previous time, forcing full cycle");
         clock91_full_cycle();
         return;
     }
 
-    renderClockPrepare(rtc_prev_hour, rtc_prev_minute);
+    // Framebuffer pPrevious survives light sleep — just update
     renderClockUpdate(ti.tm_hour, ti.tm_min);
 
-    rtc_prev_hour = ti.tm_hour;
-    rtc_prev_minute = ti.tm_min;
+    prev_hour = ti.tm_hour;
+    prev_minute = ti.tm_min;
 }
 
-// ── Gesture handling (normal mode, not timer) ──
+// ── Gesture handling ──
 
 enum GestureResult {
-    GESTURE_NONE,
-    GESTURE_STATION_CHANGED,
-    GESTURE_TIMER_START,
+    GR_NONE,
+    GR_STATION_CHANGED,
+    GR_TIMER_START,
 };
 
-static GestureResult clock91_handle_gesture(Clock91Gesture gesture) {
-    if (gesture == CLOCK91_GESTURE_NONE) return GESTURE_NONE;
+static GestureResult clock91_handle_gesture(Gesture gesture) {
+    if (gesture == GESTURE_NONE) return GR_NONE;
 
     int station_index = preferences.getUInt("station_idx", 0);
 
     switch (gesture) {
-    case CLOCK91_GESTURE_PREV:
+    case GESTURE_PREV:
         station_index = (station_index - 1 + STATION_COUNT) % STATION_COUNT;
         preferences.putUInt("station_idx", station_index);
         Log_info("clock91: station prev -> %d (%s)",
                  station_index, STATIONS[station_index].name);
-        return GESTURE_STATION_CHANGED;
+        return GR_STATION_CHANGED;
 
-    case CLOCK91_GESTURE_NEXT:
+    case GESTURE_NEXT:
         station_index = (station_index + 1) % STATION_COUNT;
         preferences.putUInt("station_idx", station_index);
         Log_info("clock91: station next -> %d (%s)",
                  station_index, STATIONS[station_index].name);
-        return GESTURE_STATION_CHANGED;
+        return GR_STATION_CHANGED;
 
-    case CLOCK91_GESTURE_TAP_MIDDLE:
-        Log_info("clock91: middle tap -> timer start");
-        return GESTURE_TIMER_START;
+    case GESTURE_TAP:
+        Log_info("clock91: tap -> timer start");
+        return GR_TIMER_START;
 
     default:
-        return GESTURE_NONE;
+        return GR_NONE;
     }
 }
 
 // ── Timer countdown loop ──
-// Stays awake for the entire countdown. Uses millis() anchoring so
-// e-ink refresh time doesn't accumulate as drift.
 
-// Build a timer-mode DisplayState and DrawList.
 static DrawList clock91_build_timer_layout(const TimerState& timer) {
     struct tm ti;
     time_t now = time(NULL);
@@ -297,21 +339,18 @@ static void clock91_timer_loop(void) {
     timer.remaining = -1;
     timerStart(&timer);
 
-    // Register touch callback so we can detect gestures while looping
     touch_pending = false;
-    iqs323_task_set_data_callback(on_iqs323_data);
 
     uint32_t start_ms = millis();
     int frame = 0;
 
-    // Initial render (full refresh for clean transition into timer mode)
+    // Initial full refresh for clean transition
     {
         DrawList dl = clock91_build_timer_layout(timer);
         renderTimerFull(dl, 0);
     }
 
     while (timerActive(timer)) {
-        // Compute remaining from wall clock (no drift accumulation)
         uint32_t elapsed_ms = millis() - start_ms;
         int elapsed_s = elapsed_ms / 1000;
         int remaining = timer.total - elapsed_s;
@@ -352,53 +391,75 @@ static void clock91_timer_loop(void) {
         uint32_t next_s_ms = start_ms + ((uint32_t)(elapsed_s + 1) * 1000);
         uint32_t now_ms = millis();
         if (next_s_ms > now_ms) {
-            delay(next_s_ms - now_ms);
+            uint32_t wait_ms = next_s_ms - now_ms;
+            clock91_sleep(wait_ms / 1000 > 0 ? wait_ms / 1000 : 1);
         }
     }
-
-    // Unregister callback
-    iqs323_task_set_data_callback(NULL);
 
     if (timer.buzzing) {
         Log_info("clock91: timer done — buzzing");
         buzzer_timer();
     }
-
-    // Return to normal display — caller will do a full or partial cycle
 }
 
-// ── Entry point ──
+// ── Init + Loop ──
 
-void clock91_cycle(Clock91Gesture gesture) {
+void clock91_init(void) {
     setenv("TZ", TIMEZONE, 1);
     tzset();
 
     render_init();
     buzzer_init();
 
+    // Register touch callback (persists across light sleep)
+    touch_pending = false;
+    iqs323_task_set_data_callback(on_iqs323_data);
+
+    // First cycle is always full
+    Log_info("clock91: init — first full cycle");
+    clock91_full_cycle();
+}
+
+void clock91_loop(void) {
+    // Compute sleep duration: align to next whole minute boundary
+    time_t now = time(NULL);
+    uint32_t sleep_secs = 60 - (now % 60);
+    if (sleep_secs < 5) sleep_secs += 60;
+
+    Log_info("clock91: sleeping %u s", sleep_secs);
+    clock91_sleep(sleep_secs);
+
+    // Determine wake cause
+    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+    bool touch_wake = (cause == ESP_SLEEP_WAKEUP_GPIO);
+
+    // Check for gesture
+    Gesture gesture = GESTURE_NONE;
+    if (touch_wake) {
+        iqs323_gesture_events ev = clock91_poll_gesture();
+        gesture = translate_gesture(ev);
+        Log_info("clock91: touch wake, gesture=%d", gesture);
+    }
+
     GestureResult gr = clock91_handle_gesture(gesture);
 
-    if (gr == GESTURE_TIMER_START) {
+    if (gr == GR_TIMER_START) {
         clock91_timer_loop();
-        // After timer, do a full cycle to restore the normal display
         clock91_full_cycle();
-        Log_info("clock91: cycle done (post-timer)");
+        Log_info("clock91: post-timer full cycle done");
         return;
     }
 
-    bool station_changed = (gr == GESTURE_STATION_CHANGED);
+    bool station_changed = (gr == GR_STATION_CHANGED);
 
     struct tm ti;
-    time_t now = time(NULL);
+    now = time(NULL);
     localtime_r(&now, &ti);
 
-    esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
-    bool cold_boot = (wakeup == ESP_SLEEP_WAKEUP_UNDEFINED);
-    bool full = cold_boot || station_changed || (ti.tm_min % 15 == 0);
+    bool full = station_changed || (ti.tm_min % 15 == 0);
 
-    Log_info("clock91: %02d:%02d %s cycle%s%s",
+    Log_info("clock91: %02d:%02d %s cycle%s",
              ti.tm_hour, ti.tm_min, full ? "FULL" : "partial",
-             cold_boot ? " (cold boot)" : "",
              station_changed ? " (station change)" : "");
 
     if (full) {
@@ -406,8 +467,6 @@ void clock91_cycle(Clock91Gesture gesture) {
     } else {
         clock91_partial_cycle();
     }
-
-    Log_info("clock91: cycle done");
 }
 
 #endif // CLOCK91_MODE

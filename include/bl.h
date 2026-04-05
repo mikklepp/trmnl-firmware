@@ -28,4 +28,10 @@ void logWithAction(LogAction action, const char *message, time_t time, int line,
 bool submitLogString(const char *log_buffer);
 bool storeLogString(const char *log_buffer);
 
+#ifdef CLOCK91_MODE
+// Enter deep sleep (hibernate). Called by clock91 when battery is critical
+// or boat is unattended. Never returns; next wake is full reboot.
+void bl_hibernate(void);
+#endif
+
 #endif

@@ -668,19 +668,7 @@ void bl_init(void)
   }
 
   if (gpio_wakeup) {
-#ifdef CLOCK91_MODE
-    // In clock91 mode: read gesture data and handle WiFi reset,
-    // but skip check_channel_states() (stock image back/forward).
-    iqs323_task_i2c_lock();
-    read_slider_coordinates();
-    read_gesture_event();
-    iqs323_task_i2c_unlock();
-
-    if (!in_wifi_reset_confirmation && check_wifi_reset_trigger()) {
-      handle_wifi_reset_confirmation();
-      // WiFi reset handles its own sleep; if we get here, it was cancelled.
-    }
-#else
+#ifndef CLOCK91_MODE
     process_iqs323_data();
 #endif
   }
@@ -691,41 +679,9 @@ void bl_init(void)
   Log_info("init time: %ld us", init_time);
 
 #ifdef CLOCK91_MODE
-  {
-    // Translate IQS323 gesture to clock91 action
-    Clock91Gesture gesture = CLOCK91_GESTURE_NONE;
-
-    if (gpio_wakeup) {
-      if (touchbar_tap_mode) {
-        // Tap mode: CH0 tap = prev, CH2 tap = next, CH1 tap = middle
-        if (button_states[0] == IQS323_CH_TOUCH) {
-          gesture = CLOCK91_GESTURE_PREV;
-        } else if (button_states[2] == IQS323_CH_TOUCH) {
-          gesture = CLOCK91_GESTURE_NEXT;
-        } else if (button_states[1] == IQS323_CH_TOUCH
-                   && slider_event == IQS323_GESTURE_TAP) {
-          gesture = CLOCK91_GESTURE_TAP_MIDDLE;
-        }
-      } else {
-        // Slide mode: swipe gestures
-        if (slider_event == IQS323_GESTURE_SWIPE_NEGATIVE
-            || slider_event == IQS323_GESTURE_FLICK_NEGATIVE) {
-          gesture = CLOCK91_GESTURE_PREV;
-        } else if (slider_event == IQS323_GESTURE_SWIPE_POSITIVE
-                   || slider_event == IQS323_GESTURE_FLICK_POSITIVE) {
-          gesture = CLOCK91_GESTURE_NEXT;
-        } else if (slider_event == IQS323_GESTURE_TAP) {
-          gesture = CLOCK91_GESTURE_TAP_MIDDLE;
-        }
-      }
-    }
-
-    Log_info("clock91 mode — branching (gesture=%d)", gesture);
-    clock91_cycle(gesture);
-    display_sleep();
-    goToSleep();
-    return;
-  }
+  // clock91: one-time init, then hand off to loop via bl_process()
+  clock91_init();
+  return;
 #endif
 
 #else
@@ -1362,7 +1318,18 @@ void bl_init(void)
  */
 void bl_process(void)
 {
+#ifdef CLOCK91_MODE
+  clock91_loop();
+#endif
 }
+
+#ifdef CLOCK91_MODE
+void bl_hibernate(void)
+{
+  display_sleep();
+  goToSleep();
+}
+#endif
 
 ApiDisplayInputs loadApiDisplayInputs(Preferences &preferences)
 {
