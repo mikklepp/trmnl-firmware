@@ -36,6 +36,9 @@ static const char* TIMEZONE = "EET-2EEST,M3.5.0/3,M10.5.0/4";
 static int prev_hour = -1;
 static int prev_minute = -1;
 
+// USB OTG state
+static bool otg_enabled = false;
+
 // ── Touch polling ──
 
 static volatile bool touch_pending = false;
@@ -258,6 +261,7 @@ static void clock91_full_cycle(void) {
     state.forecast = &grid;
 
     state.timer_active = false;
+    state.otg_enabled = otg_enabled;
 
     if (wifi_ok) {
         clock91_fetch_fmi(station, state, grid);
@@ -357,8 +361,6 @@ static void clock91_start_portal(void) {
 // ── Gesture handling ──
 
 // ── OTG toggle ──
-
-static bool otg_enabled = false;
 
 static void clock91_toggle_otg(void) {
     if (otg_enabled) {

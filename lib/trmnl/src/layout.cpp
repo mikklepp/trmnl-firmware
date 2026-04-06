@@ -254,6 +254,21 @@ static void buildForecast(DrawList& dl, const ForecastGrid& grid) {
     }
 }
 
+// Status bar hints at bottom of screen
+static char buf_usb[20];
+
+static void buildStatusBar(DrawList& dl, const DisplayState& s) {
+    // Three labels aligned with the three touch zones
+    addText(dl, LAYOUT_STATUS_LEFT_X, LAYOUT_STATUS_Y,
+            "[ OFF ]", FONT_UBUNTU_22);
+    addText(dl, LAYOUT_STATUS_MID_X, LAYOUT_STATUS_Y,
+            "[ SETUP ]", FONT_UBUNTU_22);
+    snprintf(buf_usb, sizeof(buf_usb), "USB Power: %s",
+             s.otg_enabled ? "Out" : "In");
+    addText(dl, LAYOUT_STATUS_RIGHT_X, LAYOUT_STATUS_Y,
+            buf_usb, FONT_UBUNTU_22);
+}
+
 DrawList buildLayout(const DisplayState& state) {
     DrawList dl = {};
 
@@ -274,6 +289,7 @@ DrawList buildLayout(const DisplayState& state) {
         if (state.forecast) {
             buildForecast(dl, *state.forecast);
         }
+        buildStatusBar(dl, state);
         Log_info("Layout: normal mode, %d draw cmds", dl.count);
     }
 

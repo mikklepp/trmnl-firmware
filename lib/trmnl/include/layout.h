@@ -68,6 +68,9 @@ struct DisplayState {
     int timer_seconds;     // remaining
     int timer_total;       // for progress bar
 
+    // Status
+    bool otg_enabled;      // USB OTG (power out) active
+
     // Forecast grid (NULL = no forecast data)
     const ForecastGrid* forecast;
 };
@@ -128,6 +131,12 @@ struct DisplayState {
 #define LAYOUT_TIMER_BAR_Y   1280
 #define LAYOUT_TIMER_BAR_W   1712
 #define LAYOUT_TIMER_BAR_H     24
+
+// Status bar (bottom of screen, below forecast)
+#define LAYOUT_STATUS_Y      1380
+#define LAYOUT_STATUS_LEFT_X   80
+#define LAYOUT_STATUS_MID_X   830
+#define LAYOUT_STATUS_RIGHT_X 1500
 
 // Max draw commands per frame
 #define MAX_DRAW_CMDS 200
