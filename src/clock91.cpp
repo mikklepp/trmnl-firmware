@@ -22,6 +22,7 @@
 #include "timer.h"
 #include "buzzer.h"
 #include "ble_scan.h"
+#include "display.h"
 #include "IQS323.h"
 #include "iqs323_task.h"
 
@@ -43,46 +44,35 @@ static void IRAM_ATTR on_iqs323_data(void) {
     touch_pending = true;
 }
 
-static iqs323_gesture_events clock91_poll_gesture(void) {
-    if (!touch_pending) return IQS323_GESTURE_NONE;
-    touch_pending = false;
-
-    iqs323_task_i2c_lock();
-    bool has_gesture = iqs323.getSliderEvent();
-    iqs323_gesture_events gesture = IQS323_GESTURE_NONE;
-    if (has_gesture) {
-        gesture = iqs323.getGestureType();
-    }
-    iqs323_task_i2c_unlock();
-    return gesture;
-}
-
-// ── Gesture translation ──
-// Always slide-mode: wake stub doesn't run in light sleep,
-// so channel-based tap detection isn't available.
-
 // ── Gesture map ──
 //
 // Normal mode:
-//   Swipe/flick left  → PREV  → previous FMI station
-//   Swipe/flick right → NEXT  → next FMI station
-//   Tap               → TAP   → start timer
-//   Hold              → HOLD  → start captive portal (WiFi + BLE config)
+//   Swipe/flick left   → PREV       → previous FMI station
+//   Swipe/flick right  → NEXT       → next FMI station
+//   Tap                → TAP        → start timer
+//   Hold left  (CH0)   → HOLD_LEFT  → hibernate (display off)
+//   Hold middle (CH1)  → HOLD_MID   → captive portal (WiFi + BLE config)
+//   Hold right (CH2)   → HOLD_RIGHT → toggle USB OTG
 //
 // Timer mode (raw IQS323 events, not translated):
 //   Tap               → cancel timer
 //   Swipe/flick right → next timer preset, restart
 //   Swipe/flick left  → previous timer preset, restart
+//
+// Status bar at bottom of screen shows:
+//   [OFF]          [SETUP]          [USB: ON/OFF]
 
 enum Gesture {
     GESTURE_NONE,
     GESTURE_PREV,
     GESTURE_NEXT,
     GESTURE_TAP,
-    GESTURE_HOLD,
+    GESTURE_HOLD_LEFT,
+    GESTURE_HOLD_MID,
+    GESTURE_HOLD_RIGHT,
 };
 
-static Gesture translate_gesture(iqs323_gesture_events ev) {
+static Gesture translate_gesture(iqs323_gesture_events ev, IQS323& iqs) {
     switch (ev) {
     case IQS323_GESTURE_SWIPE_NEGATIVE:
     case IQS323_GESTURE_FLICK_NEGATIVE:
@@ -93,10 +83,29 @@ static Gesture translate_gesture(iqs323_gesture_events ev) {
     case IQS323_GESTURE_TAP:
         return GESTURE_TAP;
     case IQS323_GESTURE_HOLD:
-        return GESTURE_HOLD;
+        // Determine which channel is held
+        if (iqs.channel_touchState(IQS323_CH0)) return GESTURE_HOLD_LEFT;
+        if (iqs.channel_touchState(IQS323_CH1)) return GESTURE_HOLD_MID;
+        if (iqs.channel_touchState(IQS323_CH2)) return GESTURE_HOLD_RIGHT;
+        return GESTURE_HOLD_MID;  // fallback
     default:
         return GESTURE_NONE;
     }
+}
+
+static Gesture clock91_poll_gesture(void) {
+    if (!touch_pending) return GESTURE_NONE;
+    touch_pending = false;
+
+    iqs323_task_i2c_lock();
+    Gesture result = GESTURE_NONE;
+    bool has_gesture = iqs323.getSliderEvent();
+    if (has_gesture) {
+        iqs323_gesture_events ev = iqs323.getGestureType();
+        result = translate_gesture(ev, iqs323);
+    }
+    iqs323_task_i2c_unlock();
+    return result;
 }
 
 // ── Light sleep ──
@@ -347,11 +356,57 @@ static void clock91_start_portal(void) {
 
 // ── Gesture handling ──
 
+// ── OTG toggle ──
+
+static bool otg_enabled = false;
+
+static void clock91_toggle_otg(void) {
+    if (otg_enabled) {
+        otg_turn_off();
+        otg_enabled = false;
+        Log_info("clock91: OTG off");
+    } else {
+        otg_turn_on();
+        otg_enabled = true;
+        Log_info("clock91: OTG on");
+    }
+    buzzer_beep();
+}
+
+// ── Hibernate ──
+
+static void clock91_hibernate(void) {
+    Log_info("clock91: entering hibernate (hold left)");
+    buzzer_beep();
+
+    // Show a blank screen with just "OFF" indication
+    DisplayState state = {};
+    state.station_name = "OFF";
+    state.solar_w = NAN;
+    state.charger_w = NAN;
+    state.battery_w = NAN;
+    state.engine_v = NAN;
+    state.saloon_temp = NAN;
+    state.saloon_humidity = NAN;
+    state.icebox_temp = NAN;
+    state.timer_active = false;
+    state.forecast = NULL;
+    DrawList dl = buildLayout(state);
+    renderFull(dl);
+
+    iqs323_task_set_data_callback(NULL);
+    bl_hibernate();  // deep sleep, tap to wake, never returns
+}
+
+// ── Gesture handling ──
+
 enum GestureResult {
     GR_NONE,
     GR_STATION_CHANGED,
     GR_TIMER_START,
     GR_PORTAL,
+    GR_OTG_TOGGLE,
+    GR_HIBERNATE,
 };
 
 static GestureResult clock91_handle_gesture(Gesture gesture) {
@@ -378,9 +433,17 @@ static GestureResult clock91_handle_gesture(Gesture gesture) {
         Log_info("clock91: tap -> timer start");
         return GR_TIMER_START;
 
-    case GESTURE_HOLD:
-        Log_info("clock91: hold -> captive portal");
+    case GESTURE_HOLD_LEFT:
+        Log_info("clock91: hold left -> hibernate");
+        return GR_HIBERNATE;
+
+    case GESTURE_HOLD_MID:
+        Log_info("clock91: hold middle -> captive portal");
         return GR_PORTAL;
+
+    case GESTURE_HOLD_RIGHT:
+        Log_info("clock91: hold right -> OTG toggle");
+        return GR_OTG_TOGGLE;
 
     default:
         return GR_NONE;
@@ -440,18 +503,16 @@ static void clock91_timer_loop(void) {
         frame = (frame + 1) % 3;
 
         // Poll for touch gestures
-        iqs323_gesture_events gesture = clock91_poll_gesture();
-        if (gesture == IQS323_GESTURE_TAP) {
+        Gesture gesture = clock91_poll_gesture();
+        if (gesture == GESTURE_TAP) {
             Log_info("clock91: timer cancelled by tap");
             timerCancel(&timer);
             break;
-        } else if (gesture == IQS323_GESTURE_SWIPE_POSITIVE
-                   || gesture == IQS323_GESTURE_FLICK_POSITIVE) {
+        } else if (gesture == GESTURE_NEXT) {
             timerNext(&timer);
             start_ms = millis();
             Log_info("clock91: timer next preset %ds", timer.total);
-        } else if (gesture == IQS323_GESTURE_SWIPE_NEGATIVE
-                   || gesture == IQS323_GESTURE_FLICK_NEGATIVE) {
+        } else if (gesture == GESTURE_PREV) {
             timerPrev(&timer);
             start_ms = millis();
             Log_info("clock91: timer prev preset %ds", timer.total);
@@ -506,12 +567,15 @@ void clock91_loop(void) {
     // Check for gesture
     Gesture gesture = GESTURE_NONE;
     if (touch_wake) {
-        iqs323_gesture_events ev = clock91_poll_gesture();
-        gesture = translate_gesture(ev);
+        gesture = clock91_poll_gesture();
         Log_info("clock91: touch wake, gesture=%d", gesture);
     }
 
     GestureResult gr = clock91_handle_gesture(gesture);
+
+    if (gr == GR_HIBERNATE) {
+        clock91_hibernate();  // never returns
+    }
 
     if (gr == GR_TIMER_START) {
         clock91_timer_loop();
@@ -524,6 +588,12 @@ void clock91_loop(void) {
         clock91_start_portal();
         clock91_full_cycle();
         Log_info("clock91: post-portal full cycle done");
+        return;
+    }
+
+    if (gr == GR_OTG_TOGGLE) {
+        clock91_toggle_otg();
+        clock91_full_cycle();  // refresh to update status bar
         return;
     }
 
