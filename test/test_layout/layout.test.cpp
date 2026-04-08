@@ -244,6 +244,127 @@ void test_layout_cmd_count_reasonable(void) {
     TEST_ASSERT_TRUE(dl.count < MAX_DRAW_CMDS);
 }
 
+// ── Status bar tests ──
+
+void test_layout_status_bar_has_hints(void) {
+    DisplayState s = makeNormalState();
+    DrawList dl = buildLayout(s);
+    // Status bar should show hold-gesture hints
+    TEST_ASSERT_NOT_NULL(findText(dl, "OFF"));
+    TEST_ASSERT_NOT_NULL(findText(dl, "SETUP"));
+}
+
+void test_layout_status_bar_usb_power_in(void) {
+    DisplayState s = makeNormalState();
+    s.otg_enabled = false;
+    DrawList dl = buildLayout(s);
+    const DrawCmd* cmd = findText(dl, "USB Power");
+    TEST_ASSERT_NOT_NULL(cmd);
+    TEST_ASSERT_NOT_NULL(strstr(cmd->text.text, "In"));
+}
+
+void test_layout_status_bar_usb_power_out(void) {
+    DisplayState s = makeNormalState();
+    s.otg_enabled = true;
+    DrawList dl = buildLayout(s);
+    const DrawCmd* cmd = findText(dl, "USB Power");
+    TEST_ASSERT_NOT_NULL(cmd);
+    TEST_ASSERT_NOT_NULL(strstr(cmd->text.text, "Out"));
+}
+
+void test_layout_status_bar_position(void) {
+    DisplayState s = makeNormalState();
+    DrawList dl = buildLayout(s);
+    const DrawCmd* cmd = findText(dl, "OFF");
+    TEST_ASSERT_NOT_NULL(cmd);
+    TEST_ASSERT_EQUAL_INT(LAYOUT_STATUS_Y, cmd->y);
+    TEST_ASSERT_EQUAL_INT(LAYOUT_STATUS_LEFT_X, cmd->x);
+}
+
+void test_layout_timer_no_status_bar(void) {
+    DisplayState s = makeNormalState();
+    s.timer_active = true;
+    s.timer_seconds = 120;
+    s.timer_total = 120;
+    DrawList dl = buildLayout(s);
+    // Timer mode should not render status bar (it overlaps progress bar)
+    TEST_ASSERT_NULL(findText(dl, "OFF"));
+    TEST_ASSERT_NULL(findText(dl, "SETUP"));
+    TEST_ASSERT_NULL(findText(dl, "USB Power"));
+}
+
+// ── Forecast grid tests ──
+
+static ForecastGrid makeForecastGrid() {
+    ForecastGrid grid = {};
+    // Fill a few columns for testing
+    grid.cols[0] = { 5.2f, 8.1f, 180, -3, 14, true, true };   // obs
+    grid.cols[4] = { 6.0f, 10.0f, 200, 5, 18, false, true };   // fc 1h
+    grid.valid_count = 2;
+    return grid;
+}
+
+void test_layout_forecast_row_labels(void) {
+    DisplayState s = makeNormalState();
+    ForecastGrid grid = makeForecastGrid();
+    s.forecast = &grid;
+    DrawList dl = buildLayout(s);
+    // Row labels should be present
+    TEST_ASSERT_NOT_NULL(findText(dl, "HOUR"));
+    TEST_ASSERT_NOT_NULL(findText(dl, "SEA"));
+}
+
+void test_layout_forecast_segment_labels(void) {
+    DisplayState s = makeNormalState();
+    ForecastGrid grid = makeForecastGrid();
+    s.forecast = &grid;
+    DrawList dl = buildLayout(s);
+    TEST_ASSERT_NOT_NULL(findText(dl, "OBS"));
+    TEST_ASSERT_NOT_NULL(findText(dl, "1H"));
+    TEST_ASSERT_NOT_NULL(findText(dl, "2H"));
+    TEST_ASSERT_NOT_NULL(findText(dl, "4H"));
+}
+
+void test_layout_forecast_renders_cell_values(void) {
+    DisplayState s = makeNormalState();
+    ForecastGrid grid = makeForecastGrid();
+    s.forecast = &grid;
+    DrawList dl = buildLayout(s);
+    // Column 0: hour=14 → "14", wind=5.2→"5", gust=8.1→"8", dir=180, sea=-3→"-3"
+    TEST_ASSERT_NOT_NULL(findText(dl, "14"));
+    TEST_ASSERT_NOT_NULL(findText(dl, "180"));
+    TEST_ASSERT_NOT_NULL(findText(dl, "-3"));
+}
+
+void test_layout_no_forecast_when_null(void) {
+    DisplayState s = makeNormalState();
+    s.forecast = NULL;
+    DrawList dl = buildLayout(s);
+    // No forecast labels should appear
+    TEST_ASSERT_NULL(findText(dl, "HOUR"));
+    TEST_ASSERT_NULL(findText(dl, "SEA"));
+    TEST_ASSERT_NULL(findText(dl, "OBS"));
+}
+
+void test_layout_forecast_skips_invalid_columns(void) {
+    DisplayState s = makeNormalState();
+    ForecastGrid grid = {};
+    // All columns invalid (valid=false) by default
+    grid.valid_count = 0;
+    s.forecast = &grid;
+    DrawList dl = buildLayout(s);
+    // Row labels still present (they're static)
+    TEST_ASSERT_NOT_NULL(findText(dl, "HOUR"));
+    // But no cell data should be rendered — count DSEG7_22 (forecast font) = 0
+    int fc_font_count = 0;
+    for (int i = 0; i < dl.count; i++) {
+        if (dl.cmds[i].type == DRAW_TEXT && dl.cmds[i].text.font == FONT_DSEG7_22) {
+            fc_font_count++;
+        }
+    }
+    TEST_ASSERT_EQUAL_INT(0, fc_font_count);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_layout_has_clock);
@@ -265,6 +386,18 @@ int main(int argc, char **argv) {
     RUN_TEST(test_layout_timer_fewer_lines);
     RUN_TEST(test_layout_nan_shows_dashes);
     RUN_TEST(test_layout_cmd_count_reasonable);
+    // Status bar
+    RUN_TEST(test_layout_status_bar_has_hints);
+    RUN_TEST(test_layout_status_bar_usb_power_in);
+    RUN_TEST(test_layout_status_bar_usb_power_out);
+    RUN_TEST(test_layout_status_bar_position);
+    RUN_TEST(test_layout_timer_no_status_bar);
+    // Forecast grid
+    RUN_TEST(test_layout_forecast_row_labels);
+    RUN_TEST(test_layout_forecast_segment_labels);
+    RUN_TEST(test_layout_forecast_renders_cell_values);
+    RUN_TEST(test_layout_no_forecast_when_null);
+    RUN_TEST(test_layout_forecast_skips_invalid_columns);
     UNITY_END();
     return 0;
 }
