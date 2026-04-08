@@ -44,13 +44,13 @@ struct DisplayState {
     int alarm_hour, alarm_minute;
     bool alarm_valid;
 
-    // Electricals (Victron)
-    float solar_w;
-    float charger_w;
-    float battery_w;
-    int soc_pct;
-    float engine_v;
-    int device_pct;
+    // Energy flow
+    float solar_w;        // SmartSolar PV input (always >= 0)
+    float ac_w;           // VE.Bus battery power (+ = shore in, - = inverting)
+    float house_w;        // computed: shunt - solar_batt - vebus
+    int battery_pct;      // SoC from SmartShunt
+    float engine_v;       // aux/starter voltage from SmartShunt
+    int device_pct;       // TRMNL device battery from BQ27427
 
     // FMI observations
     const char* station_name;

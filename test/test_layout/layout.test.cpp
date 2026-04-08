@@ -13,8 +13,8 @@ static DisplayState makeNormalState() {
     s.wday = 3;  // Wednesday
     s.alarm_hour = 20; s.alarm_minute = 59;
     s.alarm_valid = true;
-    s.solar_w = 145; s.charger_w = 62; s.battery_w = -28;
-    s.soc_pct = 98; s.engine_v = 12.8f; s.device_pct = 87;
+    s.solar_w = 145; s.ac_w = 62; s.house_w = -28;
+    s.battery_pct = 98; s.engine_v = 12.8f; s.device_pct = 87;
     s.station_name = "Harmaja";
     s.wind_speed = 8; s.wind_gust = 12; s.wind_dir = 225;
     s.saloon_temp = 21.3f; s.saloon_humidity = 45.0f; s.icebox_temp = -2.1f;

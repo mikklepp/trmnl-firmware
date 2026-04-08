@@ -11,9 +11,9 @@ static char buf_date[8];
 static char buf_dow[4];
 static char buf_alarm[8];
 static char buf_solar[8];
-static char buf_charger[8];
+static char buf_ac[8];
+static char buf_house[8];
 static char buf_battery[8];
-static char buf_soc[8];
 static char buf_engine[8];
 static char buf_device[8];
 static char buf_wind[8];
@@ -109,18 +109,18 @@ static void buildElectricals(DrawList& dl, const DisplayState& s) {
     addDataRow(dl, LAYOUT_RIGHT_DATA_X, y, "SOLAR", buf_solar, "W");
     y += LAYOUT_ELEC_DY;
 
-    formatOrDash(buf_charger, sizeof(buf_charger), s.charger_w, formatTemp);
-    if (!std::isnan(s.charger_w)) formatInt(buf_charger, sizeof(buf_charger), (int)s.charger_w);
-    addDataRow(dl, LAYOUT_RIGHT_DATA_X, y, "CHARGER", buf_charger, "W");
+    formatOrDash(buf_ac, sizeof(buf_ac), s.ac_w, formatTemp);
+    if (!std::isnan(s.ac_w)) formatInt(buf_ac, sizeof(buf_ac), (int)s.ac_w);
+    addDataRow(dl, LAYOUT_RIGHT_DATA_X, y, "AC", buf_ac, "W");
     y += LAYOUT_ELEC_DY;
 
-    formatOrDash(buf_battery, sizeof(buf_battery), s.battery_w, formatTemp);
-    if (!std::isnan(s.battery_w)) formatInt(buf_battery, sizeof(buf_battery), (int)s.battery_w);
-    addDataRow(dl, LAYOUT_RIGHT_DATA_X, y, "BATTERY", buf_battery, "W");
+    formatOrDash(buf_house, sizeof(buf_house), s.house_w, formatTemp);
+    if (!std::isnan(s.house_w)) formatInt(buf_house, sizeof(buf_house), (int)s.house_w);
+    addDataRow(dl, LAYOUT_RIGHT_DATA_X, y, "HOUSE", buf_house, "W");
     y += LAYOUT_ELEC_DY;
 
-    formatPct(buf_soc, sizeof(buf_soc), s.soc_pct);
-    addDataRow(dl, LAYOUT_RIGHT_DATA_X, y, "SOC", buf_soc, "%");
+    formatPct(buf_battery, sizeof(buf_battery), s.battery_pct);
+    addDataRow(dl, LAYOUT_RIGHT_DATA_X, y, "BATTERY", buf_battery, "%");
     y += LAYOUT_ELEC_DY;
 
     formatFloat1(buf_engine, sizeof(buf_engine), s.engine_v);

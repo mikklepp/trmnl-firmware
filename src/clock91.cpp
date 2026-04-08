@@ -271,11 +271,33 @@ static void clock91_full_cycle(void) {
 
     // BLE scan (runs after WiFi is off — they share the radio)
     BleScanResult ble = ble_scan_run(10);
+
+    // Solar PV input
     state.solar_w = ble.solar.valid ? ble.solar.pv_power : NAN;
-    state.charger_w = ble.vebus.valid ? (ble.vebus.battery_voltage * ble.vebus.battery_current) : NAN;
-    state.battery_w = ble.shunt.valid ? (ble.shunt.battery_voltage * ble.shunt.battery_current) : NAN;
+
+    // AC: VE.Bus battery power (+ = shore charging, - = inverting)
+    float vebus_w = ble.vebus.valid ? (ble.vebus.battery_voltage * ble.vebus.battery_current) : NAN;
+    state.ac_w = vebus_w;
+
+    // Shunt total battery power
+    float shunt_w = ble.shunt.valid ? (ble.shunt.battery_voltage * ble.shunt.battery_current) : NAN;
+
+    // Solar's contribution to battery (charger output, not PV input)
+    float solar_batt_w = ble.solar.valid ? (ble.solar.battery_voltage * ble.solar.battery_current) : NAN;
+
+    // House = Shunt - Solar_battery - VEBus
+    // Negative = house consuming, positive = other source charging (alternator, etc.)
+    if (!isnan(shunt_w)) {
+        float known = 0;
+        if (!isnan(solar_batt_w)) known += solar_batt_w;
+        if (!isnan(vebus_w)) known += vebus_w;
+        state.house_w = shunt_w - known;
+    } else {
+        state.house_w = NAN;
+    }
+
+    state.battery_pct = ble.shunt.valid && !isnan(ble.shunt.soc) ? (int)ble.shunt.soc : -1;
     state.engine_v = ble.shunt.valid ? ble.shunt.aux_voltage : NAN;
-    state.soc_pct = ble.shunt.valid && !isnan(ble.shunt.soc) ? (int)ble.shunt.soc : -1;
     state.saloon_temp = ble.ruuvi_saloon.valid ? ble.ruuvi_saloon.temperature : NAN;
     state.saloon_humidity = ble.ruuvi_saloon.valid ? ble.ruuvi_saloon.humidity : NAN;
     state.icebox_temp = ble.ruuvi_icebox.valid ? ble.ruuvi_icebox.temperature : NAN;
@@ -328,8 +350,8 @@ static void clock91_render_setup_screen(void) {
     state.wday = ti.tm_wday;
     state.station_name = "SETUP  WiFi: TRMNL";
     state.solar_w = NAN;
-    state.charger_w = NAN;
-    state.battery_w = NAN;
+    state.ac_w = NAN;
+    state.house_w = NAN;
     state.engine_v = NAN;
     state.saloon_temp = NAN;
     state.saloon_humidity = NAN;
@@ -385,8 +407,8 @@ static void clock91_hibernate(void) {
     DisplayState state = {};
     state.station_name = "OFF";
     state.solar_w = NAN;
-    state.charger_w = NAN;
-    state.battery_w = NAN;
+    state.ac_w = NAN;
+    state.house_w = NAN;
     state.engine_v = NAN;
     state.saloon_temp = NAN;
     state.saloon_humidity = NAN;
