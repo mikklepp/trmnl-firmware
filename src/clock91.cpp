@@ -138,6 +138,16 @@ static void clock91_sleep(uint32_t seconds) {
 
 // ── WiFi ──
 
+static void wait_wifi_off(uint32_t timeout_ms = 500) {
+    unsigned long deadline = millis() + timeout_ms;
+    while (WiFi.getMode() != WIFI_MODE_NULL && millis() < deadline) {
+        delay(10);
+    }
+    if (WiFi.getMode() != WIFI_MODE_NULL) {
+        Log_error("clock91: WiFi did not turn off within %lu ms", (unsigned long)timeout_ms);
+    }
+}
+
 static bool clock91_wifi_connect(void) {
     if (!WifiCaptivePortal.isSaved()) {
         Log_info("clock91: no WiFi credentials (use hold gesture to configure)");
@@ -267,6 +277,7 @@ static void clock91_full_cycle(void) {
         clock91_fetch_fmi(station, state, grid);
         WiFi.disconnect(true);
         WiFi.mode(WIFI_OFF);
+        wait_wifi_off();
     }
 
     // BLE scan (runs after WiFi is off — they share the radio)
@@ -375,9 +386,12 @@ static void clock91_start_portal(void) {
         Log_info("clock91: portal done, WiFi connected");
         WiFi.disconnect(true);
         WiFi.mode(WIFI_OFF);
+        wait_wifi_off();
     } else {
         Log_info("clock91: portal done, no WiFi");
     }
+
+    ble_config_reload();
 }
 
 // ── Gesture handling ──
@@ -565,6 +579,7 @@ void clock91_init(void) {
 
     render_init();
     buzzer_init();
+    ble_config_init();
 
     // Register touch callback (persists across light sleep)
     touch_pending = false;

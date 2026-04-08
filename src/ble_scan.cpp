@@ -5,6 +5,7 @@
 #include <string>
 #include <NimBLEDevice.h>
 #include <Preferences.h>
+#include <freertos/semphr.h>
 #include <trmnl_log.h>
 #include "victron.h"
 #include "ruuvi.h"
@@ -31,10 +32,11 @@ static bool has_vebus = false;
 static bool has_ruuvi_saloon = false;
 static bool has_ruuvi_icebox = false;
 
-// Scan results (written by callback)
+// Scan results (written by callback, guarded by scan_mutex)
 static BleScanResult scan_result;
 static uint8_t devices_heard = 0;
 static uint8_t devices_expected_mask = 0;  // bitmask of configured devices
+static SemaphoreHandle_t scan_mutex = NULL;
 
 // Parse a hex string "AABBCCDD..." into bytes. Returns number of bytes parsed.
 static int hex_to_bytes(const char* hex, uint8_t* out, int max_len) {
@@ -53,6 +55,8 @@ static int hex_to_bytes(const char* hex, uint8_t* out, int max_len) {
 }
 
 static void load_ble_config(void) {
+    has_solar = has_shunt = has_vebus = has_ruuvi_saloon = has_ruuvi_icebox = false;
+
     // Victron Solar: MAC + 16-byte AES key (stored as 32-char hex)
     String solar_mac_str = preferences.getString("v_solar_mac", "");
     String solar_key_str = preferences.getString("v_solar_key", "");
@@ -112,35 +116,60 @@ static void handle_victron(const std::string& mac, const uint8_t* mfr, size_t mf
 
     if (has_solar && mac == victron_solar_mac) {
         if (victronDecrypt(mfr, mfr_len, victron_solar_key, plain, &plain_len)) {
-            scan_result.solar = parseVictronSolar(plain, plain_len);
-            if (scan_result.solar.valid) devices_heard |= 0x01;
+            VictronSolar parsed = parseVictronSolar(plain, plain_len);
+            if (parsed.valid) {
+                xSemaphoreTake(scan_mutex, portMAX_DELAY);
+                scan_result.solar = parsed;
+                devices_heard |= 0x01;
+                xSemaphoreGive(scan_mutex);
+            }
         }
     }
 
     if (has_shunt && mac == victron_shunt_mac) {
         if (victronDecrypt(mfr, mfr_len, victron_shunt_key, plain, &plain_len)) {
-            scan_result.shunt = parseVictronShunt(plain, plain_len);
-            if (scan_result.shunt.valid) devices_heard |= 0x02;
+            VictronShunt parsed = parseVictronShunt(plain, plain_len);
+            if (parsed.valid) {
+                xSemaphoreTake(scan_mutex, portMAX_DELAY);
+                scan_result.shunt = parsed;
+                devices_heard |= 0x02;
+                xSemaphoreGive(scan_mutex);
+            }
         }
     }
 
     if (has_vebus && mac == victron_vebus_mac) {
         if (victronDecrypt(mfr, mfr_len, victron_vebus_key, plain, &plain_len)) {
-            scan_result.vebus = parseVictronVEBus(plain, plain_len);
-            if (scan_result.vebus.valid) devices_heard |= 0x10;
+            VictronVEBus parsed = parseVictronVEBus(plain, plain_len);
+            if (parsed.valid) {
+                xSemaphoreTake(scan_mutex, portMAX_DELAY);
+                scan_result.vebus = parsed;
+                devices_heard |= 0x10;
+                xSemaphoreGive(scan_mutex);
+            }
         }
     }
 }
 
 static void handle_ruuvi(const std::string& mac, const uint8_t* payload, size_t len) {
     if (has_ruuvi_saloon && mac == ruuvi_saloon_mac) {
-        scan_result.ruuvi_saloon = parseRuuviRAWv2(payload, len);
-        if (scan_result.ruuvi_saloon.valid) devices_heard |= 0x04;
+        RuuviData parsed = parseRuuviRAWv2(payload, len);
+        if (parsed.valid) {
+            xSemaphoreTake(scan_mutex, portMAX_DELAY);
+            scan_result.ruuvi_saloon = parsed;
+            devices_heard |= 0x04;
+            xSemaphoreGive(scan_mutex);
+        }
     }
 
     if (has_ruuvi_icebox && mac == ruuvi_icebox_mac) {
-        scan_result.ruuvi_icebox = parseRuuviRAWv2(payload, len);
-        if (scan_result.ruuvi_icebox.valid) devices_heard |= 0x08;
+        RuuviData parsed = parseRuuviRAWv2(payload, len);
+        if (parsed.valid) {
+            xSemaphoreTake(scan_mutex, portMAX_DELAY);
+            scan_result.ruuvi_icebox = parsed;
+            devices_heard |= 0x08;
+            xSemaphoreGive(scan_mutex);
+        }
     }
 }
 
@@ -177,7 +206,9 @@ BleScanResult ble_scan_run(int duration_seconds) {
     scan_result = {};
     devices_heard = 0;
 
-    load_ble_config();
+    if (!scan_mutex) {
+        scan_mutex = xSemaphoreCreateMutex();
+    }
 
     if (devices_expected_mask == 0) {
         Log_info("BLE: no devices configured, skipping scan");
@@ -199,7 +230,10 @@ BleScanResult ble_scan_run(int duration_seconds) {
 
     unsigned long deadline = millis() + (duration_seconds * 1000);
     while (millis() < deadline) {
-        if ((devices_heard & devices_expected_mask) == devices_expected_mask) {
+        xSemaphoreTake(scan_mutex, portMAX_DELAY);
+        bool all_heard = (devices_heard & devices_expected_mask) == devices_expected_mask;
+        xSemaphoreGive(scan_mutex);
+        if (all_heard) {
             Log_info("BLE: all devices heard, stopping early");
             break;
         }
@@ -215,6 +249,14 @@ BleScanResult ble_scan_run(int duration_seconds) {
              __builtin_popcount(devices_heard & devices_expected_mask),
              __builtin_popcount(devices_expected_mask));
     return scan_result;
+}
+
+void ble_config_init(void) {
+    load_ble_config();
+}
+
+void ble_config_reload(void) {
+    load_ble_config();
 }
 
 #endif // CLOCK91_MODE
