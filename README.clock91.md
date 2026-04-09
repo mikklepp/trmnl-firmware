@@ -131,9 +131,68 @@ bl_process()  →  clock91_loop()  →  return  (called repeatedly from Arduino 
 
 ```mermaid
 flowchart TB
-    %% ── Boot ──
-    Start(["Power on / deep sleep wake"])
-    Start --> bl_init
+    %% ── Main loop spine (defined first for layout) ──
+
+    subgraph C91 ["clock91.cpp"]
+        clock91_loop["clock91_loop()"]
+        light_sleep["clock91_sleep()
+        minute-aligned light sleep
+        (timer + GPIO wake)"]
+        wake_cause{"wake cause?"}
+        check_time["get local time"]
+        reboot_check{"03:00 or
+        heap < 32 KB?"}
+        cycle_type{"minute % 15 == 0
+        or station changed?"}
+        full_cycle["clock91_full_cycle()
+        WiFi → NTP → FMI → WiFi off →
+        BLE scan → layout → renderFull"]
+        partial_cycle["clock91_partial_cycle()
+        renderClockUpdate() — digits only"]
+        RETURN(["return to Arduino loop()"])
+
+        clock91_loop --> light_sleep --> wake_cause
+        wake_cause -->|"timer"| check_time
+        check_time --> reboot_check
+        reboot_check -->|"no"| cycle_type
+        cycle_type -->|"yes"| full_cycle --> RETURN
+        cycle_type -->|"no"| partial_cycle --> RETURN
+
+        %% ── Touch wake branch ──
+        poll_gesture["poll gesture"]
+        handle_gesture{"gesture?"}
+        wake_cause -->|"touch"| poll_gesture --> handle_gesture
+        handle_gesture -->|"none"| check_time
+        handle_gesture -->|"swipe L/R"| station_change["change station_idx"]
+        station_change --> check_time
+
+        %% ── Gesture actions ──
+        handle_gesture -->|"tap"| timer_loop["clock91_timer_loop()
+        1 s partial refresh loop
+        (light sleep between frames)"]
+        handle_gesture -->|"hold mid"| portal["clock91_start_portal()
+        captive portal (blocking)"]
+        handle_gesture -->|"hold right"| otg["clock91_toggle_otg()"]
+        handle_gesture -->|"hold left"| hibernate_fn["clock91_hibernate()
+        show OFF screen"]
+
+        timer_loop --> full_cycle
+        portal --> full_cycle
+        otg --> full_cycle
+
+        %% ── Reboot exit ──
+        deep_reboot["clock91_deep_reboot()
+        detach touch callback"]
+        reboot_check -->|"yes"| deep_reboot
+
+        %% ── Init (runs once) ──
+        clock91_init["clock91_init()
+        timezone, fonts, buzzer, BLE config,
+        register touch callback"]
+        clock91_init --> full_cycle
+    end
+
+    %% ── bl.cpp (boot + deep sleep) ──
 
     subgraph BL ["bl.cpp"]
         bl_init["bl_init()
@@ -141,16 +200,15 @@ flowchart TB
         IQS323 touch, battery gauge"]
         bl_process["bl_process()
         called from Arduino loop()"]
-        goToSleep_timer["goToSleep(true)
-        IQS323 deinit, pin config,
-        minute-aligned timer + touch wake"]
-        goToSleep_no_timer["goToSleep(false)
-        IQS323 deinit, pin config,
-        touch wake only — no timer"]
+
         bl_deep_sleep["bl_deep_sleep()
         display_sleep()"]
         bl_hibernate["bl_hibernate()
         display_sleep()"]
+        goToSleep_timer["goToSleep(true)
+        minute-aligned timer + touch wake"]
+        goToSleep_no_timer["goToSleep(false)
+        touch wake only — no timer"]
         deep_sleep_start(["esp_deep_sleep_start()
         RAM lost"])
 
@@ -158,73 +216,13 @@ flowchart TB
         bl_hibernate --> goToSleep_no_timer --> deep_sleep_start
     end
 
+    %% ── Cross-file edges ──
+    Start(["Power on / deep sleep wake"]) --> bl_init
     bl_init --> clock91_init
-
-    subgraph C91 ["clock91.cpp"]
-        clock91_init["clock91_init()
-        timezone, fonts, buzzer, BLE config,
-        register touch callback"]
-        clock91_init --> full_cycle
-
-        full_cycle["clock91_full_cycle()
-        WiFi → NTP → FMI → WiFi off →
-        BLE scan → layout → renderFull"]
-        full_cycle --> RETURN(["return to Arduino loop()"])
-
-        clock91_loop["clock91_loop()"]
-
-        %% Sleep
-        light_sleep["clock91_sleep()
-        minute-aligned light sleep
-        (timer + GPIO wake)"]
-        clock91_loop --> light_sleep
-
-        %% Wake
-        light_sleep --> wake_cause{"wake cause?"}
-        wake_cause -->|"timer"| check_time
-        wake_cause -->|"touch"| poll_gesture["poll gesture"]
-        poll_gesture --> handle_gesture{"gesture?"}
-
-        %% Gesture dispatch
-        handle_gesture -->|"hold left"| hibernate_fn["clock91_hibernate()
-        show OFF screen"]
-        handle_gesture -->|"tap"| timer_loop["clock91_timer_loop()
-        1 s partial refresh loop
-        (light sleep between frames)"]
-        handle_gesture -->|"hold mid"| portal["clock91_start_portal()
-        captive portal (blocking)"]
-        handle_gesture -->|"hold right"| otg["clock91_toggle_otg()"]
-        handle_gesture -->|"swipe L/R"| station_change["change station_idx"]
-        handle_gesture -->|"none"| check_time
-
-        timer_loop --> full_cycle
-        portal --> full_cycle
-        otg --> full_cycle
-
-        station_change --> check_time
-
-        %% Reboot check
-        check_time["get local time"]
-        check_time --> reboot_check{"03:00 or
-        heap < 32 KB?"}
-        reboot_check -->|"yes"| deep_reboot["clock91_deep_reboot()
-        detach touch callback"]
-
-        %% Normal cycle
-        reboot_check -->|"no"| cycle_type{"minute % 15 == 0
-        or station changed?"}
-        cycle_type -->|"yes"| full_cycle
-        cycle_type -->|"no"| partial_cycle["clock91_partial_cycle()
-        renderClockUpdate() — digits only"]
-
-        partial_cycle --> RETURN
-    end
-
-    %% Cross-file calls
-    RETURN --> bl_process
-    bl_process --> clock91_loop
+    RETURN --> bl_process --> clock91_loop
     hibernate_fn --> bl_hibernate
     deep_reboot --> bl_deep_sleep
+    deep_sleep_start --> Start
 ```
 
 ### Sleep modes
