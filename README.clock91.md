@@ -164,10 +164,12 @@ flowchart TB
         clock91_init["clock91_init()
         timezone, fonts, buzzer, BLE config,
         register touch callback"]
-        clock91_init --> full_init["clock91_full_cycle()
+        clock91_init --> full_cycle
+
+        full_cycle["clock91_full_cycle()
         WiFi → NTP → FMI → WiFi off →
         BLE scan → layout → renderFull"]
-        full_init --> RETURN_INIT(["return to Arduino loop()"])
+        full_cycle --> RETURN(["return to Arduino loop()"])
 
         clock91_loop["clock91_loop()"]
 
@@ -195,12 +197,9 @@ flowchart TB
         handle_gesture -->|"swipe L/R"| station_change["change station_idx"]
         handle_gesture -->|"none"| check_time
 
-        timer_loop --> full_post_timer["clock91_full_cycle()"]
-        full_post_timer --> RETURN_LOOP
-        portal --> full_post_portal["clock91_full_cycle()"]
-        full_post_portal --> RETURN_LOOP
-        otg --> full_post_otg["clock91_full_cycle()"]
-        full_post_otg --> RETURN_LOOP
+        timer_loop --> full_cycle
+        portal --> full_cycle
+        otg --> full_cycle
 
         station_change --> check_time
 
@@ -214,20 +213,16 @@ flowchart TB
         %% Normal cycle
         reboot_check -->|"no"| cycle_type{"minute % 15 == 0
         or station changed?"}
-        cycle_type -->|"yes"| full_cycle["clock91_full_cycle()
-        WiFi → NTP → FMI → WiFi off →
-        BLE scan → layout → renderFull"]
+        cycle_type -->|"yes"| full_cycle
         cycle_type -->|"no"| partial_cycle["clock91_partial_cycle()
         renderClockUpdate() — digits only"]
 
-        full_cycle --> RETURN_LOOP(["return to Arduino loop()"])
-        partial_cycle --> RETURN_LOOP
+        partial_cycle --> RETURN
     end
 
     %% Cross-file calls
-    RETURN_INIT --> bl_process
+    RETURN --> bl_process
     bl_process --> clock91_loop
-    RETURN_LOOP --> bl_process
     hibernate_fn --> bl_hibernate
     deep_reboot --> bl_deep_sleep
 ```
