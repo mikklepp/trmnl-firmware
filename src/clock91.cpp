@@ -7,6 +7,7 @@
 #include <WifiCaptive.h>
 #include <Preferences.h>
 #include <esp_sleep.h>
+#include <esp_heap_caps.h>
 #include <driver/gpio.h>
 #include <trmnl_log.h>
 #include <bl.h>
@@ -35,6 +36,11 @@ static const char* TIMEZONE = "EET-2EEST,M3.5.0/3,M10.5.0/4";
 // Previous time for partial refresh (survives light sleep — regular static)
 static int prev_hour = -1;
 static int prev_minute = -1;
+
+// Deep sleep reboot: reclaim heap once per day
+static const int REBOOT_HOUR = 3;
+static const int REBOOT_MINUTE = 0;
+static const size_t HEAP_MIN_THRESHOLD = 32768;  // 32 KB
 
 // USB OTG state
 static bool otg_enabled = false;
@@ -433,7 +439,7 @@ static void clock91_hibernate(void) {
     renderFull(dl);
 
     iqs323_task_set_data_callback(NULL);
-    bl_hibernate();  // deep sleep, tap to wake, never returns
+    bl_hibernate();  // deep sleep, touch wake only, never returns
 }
 
 // ── Gesture handling ──
@@ -571,6 +577,33 @@ static void clock91_timer_loop(void) {
     }
 }
 
+// ── Deep sleep reboot (heap reclaim) ──
+
+static bool clock91_should_reboot(const struct tm& ti) {
+    size_t free_heap = esp_get_free_heap_size();
+    size_t min_heap = esp_get_minimum_free_heap_size();
+
+    Log_info("clock91: heap free=%u min_ever=%u", free_heap, min_heap);
+
+    if (free_heap < HEAP_MIN_THRESHOLD) {
+        Log_info("clock91: heap below %u — forcing deep sleep reboot", HEAP_MIN_THRESHOLD);
+        return true;
+    }
+
+    if (ti.tm_hour == REBOOT_HOUR && ti.tm_min == REBOOT_MINUTE) {
+        Log_info("clock91: scheduled %02d:%02d reboot", REBOOT_HOUR, REBOOT_MINUTE);
+        return true;
+    }
+
+    return false;
+}
+
+static void clock91_deep_reboot(void) {
+    Log_info("clock91: deep sleep reboot — reclaiming heap");
+    iqs323_task_set_data_callback(NULL);
+    bl_deep_sleep();  // timer wake in ~60s, device restarts with clean heap
+}
+
 // ── Init + Loop ──
 
 void clock91_init(void) {
@@ -641,6 +674,11 @@ void clock91_loop(void) {
     struct tm ti;
     now = time(NULL);
     localtime_r(&now, &ti);
+
+    // Nightly deep sleep reboot to reclaim heap (also triggers on low heap)
+    if (!station_changed && clock91_should_reboot(ti)) {
+        clock91_deep_reboot();  // never returns
+    }
 
     bool full = station_changed || (ti.tm_min % 15 == 0);
 

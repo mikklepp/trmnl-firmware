@@ -29,8 +29,9 @@ bool submitLogString(const char *log_buffer);
 bool storeLogString(const char *log_buffer);
 
 #ifdef CLOCK91_MODE
-// Enter deep sleep (hibernate). Called by clock91 when battery is critical
-// or boat is unattended. Never returns; next wake is full reboot.
+// Deep sleep with minute-aligned timer wake. Device restarts on wake.
+void bl_deep_sleep(void);
+// Deep sleep with touch wake only — no timer. True power-off.
 void bl_hibernate(void);
 #endif
 

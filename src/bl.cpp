@@ -95,7 +95,7 @@ static bool performApiSetup();     // perform API setup call and return success
 static void downloadSetupImage();                    // download and display setup image
 static void resetDeviceCredentials(void);            // reset device credentials API key, Friendly ID, Wi-Fi SSID and password
 static void checkAndPerformFirmwareUpdate(void);     // OTA update
-static void goToSleep(void);                         // sleep preparing
+static void goToSleep(bool enable_timer = true);      // sleep preparing
 static bool setClock(void);                          // clock synchronization
 static float readBatteryVoltage(void);               // battery voltage reading
 static void submitStoredLogs(void);
@@ -1324,10 +1324,16 @@ void bl_process(void)
 }
 
 #ifdef CLOCK91_MODE
-void bl_hibernate(void)
+void bl_deep_sleep(void)
 {
   display_sleep();
   goToSleep();
+}
+
+void bl_hibernate(void)
+{
+  display_sleep();
+  goToSleep(false);
 }
 #endif
 
@@ -2896,7 +2902,7 @@ static void checkAndPerformFirmwareUpdate(void)
  * @param none
  * @return none
  */
-static void goToSleep(void)
+static void goToSleep(bool enable_timer)
 {
   Log.info("%s [%d]: go to sleep\r\n", __FILE__, __LINE__);
   submitStoredLogs();
@@ -2960,7 +2966,8 @@ static void goToSleep(void)
   Log.info("%s [%d]: time to sleep - %d\r\n", __FILE__, __LINE__, time_to_sleep);
   preferences.putUInt(PREFERENCES_LAST_SLEEP_TIME, getTime());
   preferences.end();
-  esp_sleep_enable_timer_wakeup((uint64_t)time_to_sleep * SLEEP_uS_TO_S_FACTOR);
+  if (enable_timer)
+    esp_sleep_enable_timer_wakeup((uint64_t)time_to_sleep * SLEEP_uS_TO_S_FACTOR);
   // Configure GPIO pin for wakeup
 #if CONFIG_IDF_TARGET_ESP32
   #define BUTTON_PIN_BITMASK(GPIO) (1ULL << GPIO)  // 2 ^ GPIO_NUMBER in hex
