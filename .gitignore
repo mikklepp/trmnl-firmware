@@ -12,3 +12,5 @@ managed_components/
 
 sdkconfig.*.old
 dependencies.lock
+# Compiled font conversion tool (build artifact)
+lib/bb_epaper/fontconvert/fontconvert

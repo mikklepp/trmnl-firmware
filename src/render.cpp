@@ -103,8 +103,13 @@ void renderClockUpdate(int hour, int minute) {
     // Assumes pPrevious already reflects what's on screen (either from
     // renderClockPrepare after deep sleep, or from the previous update
     // while awake).
-    int y_start = LAYOUT_CLOCK_Y;
-    int y_end = LAYOUT_CLOCK_Y + 380;  // 340px font + margin
+    // LAYOUT_CLOCK_Y is a baseline and the digits are drawn upward from it, so
+    // the refresh window starts an ascent above it — not at it. CLOCK_ASCENT
+    // matches the generated dseg7_clock (see layout.h); the margin absorbs the
+    // few px of descent the ':' glyph can sit below the baseline.
+    const int CLOCK_ASCENT = 310;
+    int y_start = LAYOUT_CLOCK_Y - CLOCK_ASCENT;
+    int y_end = LAYOUT_CLOCK_Y + 20;
     char buf[8];
 
     bbep.fillScreen(BBEP_WHITE);

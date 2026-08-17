@@ -76,6 +76,20 @@ struct DisplayState {
 };
 
 // ── Layout constants (pixel coordinates from prototype) ──
+//
+// Y coordinates for text are BASELINES, because bb_epaper's setCursor() takes a
+// baseline (bb_ep_gfx.inl draws each glyph at y + glyph->yOffset, and yOffset is
+// negative). layout-prototype.html positions text with CSS `top` — the top of the
+// line box — so every text Y here is written as `prototype_top + ascent`, where
+// ascent is that font's distance from baseline to the top of its tallest glyph.
+//
+// Ascents, measured from the generated font headers (max -yOffset over the glyphs
+// each font actually renders):
+//   FONT_DSEG7_340  310    FONT_DSEG7_72   66    FONT_DSEG7_22   19
+//   FONT_DSEG14_72   66    FONT_UBUNTU_22  15
+// If a font is regenerated at a different size, these must be recomputed.
+//
+// Non-text Y values (dividers, bars) are plain coordinates — no ascent applies.
 
 // Structural
 #define LAYOUT_VSPLIT_X      1275
@@ -87,13 +101,13 @@ struct DisplayState {
 
 // Clock area
 #define LAYOUT_DOW_X           80
-#define LAYOUT_DOW_Y           50
+#define LAYOUT_DOW_Y      (   50 + 66)   // DSEG14 72
 #define LAYOUT_CLOCK_X         40
-#define LAYOUT_CLOCK_Y        170
+#define LAYOUT_CLOCK_Y    (  170 + 310)  // DSEG7 340
 #define LAYOUT_DATE_X         764
-#define LAYOUT_DATE_Y          40
+#define LAYOUT_DATE_Y     (   40 + 66)   // DSEG7 72
 #define LAYOUT_ALARM_X        764
-#define LAYOUT_ALARM_Y        565
+#define LAYOUT_ALARM_Y    (  565 + 66)   // DSEG7 72 (row baseline)
 
 // Data column positions (centred in their zones)
 #define LAYOUT_LEFT_DATA_X    764
@@ -102,38 +116,48 @@ struct DisplayState {
 #define LAYOUT_VALUE_W        270
 
 // Electricals (right column, y positions)
-#define LAYOUT_ELEC_Y0         40
-#define LAYOUT_ELEC_DY        105
+// Rows share a baseline (prototype uses flex align-items: baseline), so the row
+// baseline follows the tallest element — the 72px value.
+#define LAYOUT_ELEC_Y0    (   40 + 66)   // DSEG7 72
+#define LAYOUT_ELEC_DY        105        // row pitch — spacing, not a baseline
 
 // FMI (left below mid)
 #define LAYOUT_FMI_STATION_X   80
-#define LAYOUT_FMI_STATION_Y  750
-#define LAYOUT_FMI_Y0         700
+#define LAYOUT_FMI_STATION_Y (750 + 66)  // DSEG14 72
+#define LAYOUT_FMI_Y0     (  700 + 66)   // DSEG7 72
 #define LAYOUT_FMI_DY         105
 
 // Ruuvi (right below mid)
-#define LAYOUT_RUUVI_Y0       700
+#define LAYOUT_RUUVI_Y0   (  700 + 66)   // DSEG7 72
 #define LAYOUT_RUUVI_DY       105
 
 // Forecast grid (0,1024 → 1872,1404)
+// Row Y values are the digit-cell tops from the prototype; the row labels sit
+// 8px lower there (top: 1076 for HOUR) but share these baselines here, which is
+// within a pixel or two of the prototype at this size.
 #define LAYOUT_FC_LABEL_X      10
-#define LAYOUT_FC_ROW_HR_Y   1068
-#define LAYOUT_FC_ROW_WIND_Y 1136
-#define LAYOUT_FC_ROW_GUST_Y 1204
-#define LAYOUT_FC_ROW_DIR_Y  1272
-#define LAYOUT_FC_ROW_SEA_Y  1340
-#define LAYOUT_FC_SEG_Y      1034
+#define LAYOUT_FC_ROW_HR_Y   (1068 + 19)  // DSEG7 22
+#define LAYOUT_FC_ROW_WIND_Y (1136 + 19)
+#define LAYOUT_FC_ROW_GUST_Y (1204 + 19)
+#define LAYOUT_FC_ROW_DIR_Y  (1272 + 19)
+#define LAYOUT_FC_ROW_SEA_Y  (1340 + 19)
+#define LAYOUT_FC_SEG_Y      (1034 + 15)  // Ubuntu 22
 
 // Timer
-#define LAYOUT_TIMER_X        936   // centred horizontally
-#define LAYOUT_TIMER_Y        860
+// NOTE: the prototype centres the timer digits on this X (translateX(-50%)), but
+// the renderer treats X as a left edge — so the digits currently sit half a
+// string-width right of where they belong. Horizontal alignment is unhandled
+// throughout (see .data-value text-align:right and .fc text-align:center); left
+// as-is deliberately, pending the alignment pass.
+#define LAYOUT_TIMER_X        936   // centred horizontally (not yet honoured)
+#define LAYOUT_TIMER_Y    (  860 + 310)  // DSEG7 340
 #define LAYOUT_TIMER_BAR_X     80
 #define LAYOUT_TIMER_BAR_Y   1280
 #define LAYOUT_TIMER_BAR_W   1712
 #define LAYOUT_TIMER_BAR_H     24
 
 // Status bar (bottom of screen, below forecast)
-#define LAYOUT_STATUS_Y      1380
+#define LAYOUT_STATUS_Y      (1380 + 15)  // Ubuntu 22 — ink ends at 1394 of 1404
 #define LAYOUT_STATUS_LEFT_X   80
 #define LAYOUT_STATUS_MID_X   830
 #define LAYOUT_STATUS_RIGHT_X 1500
