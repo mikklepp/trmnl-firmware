@@ -76,7 +76,17 @@ void display_init(void)
     bbep.initIO(EPD_DC_PIN, EPD_RST_PIN, EPD_BUSY_PIN, EPD_CS_PIN, EPD_MOSI_PIN, EPD_SCK_PIN, 8000000);
 #else
 #ifdef BOARD_TRMNL_X
-    bbep.initPanel(BB_PANEL_TRMNL_X);
+    {
+        // initPanel() allocates the framebuffers from PSRAM and returns
+        // BBEP_ERROR_NO_MEMORY if that fails. Ignoring it leaves pCurrent NULL
+        // and the failure only surfaces later as a null write inside
+        // fillScreen(), which is very hard to trace back to here.
+        int rc = bbep.initPanel(BB_PANEL_TRMNL_X);
+        if (rc != BBEP_SUCCESS) {
+            Log_error("initPanel failed rc=%d (PSRAM free=%d) — display unusable",
+                      rc, (int)ESP.getFreePsram());
+        }
+    }
 //    bbep.setPasses(3, 3);
 #elif defined( BOARD_TRMNL_X_SENSORIAS3 )
     bbep.initPanel(BB_PANEL_V7_RAW);

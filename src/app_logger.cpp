@@ -25,20 +25,29 @@ static void handle_store_submit(LogLevel level, const char *clean_message, const
 
 void log_impl(LogLevel level, LogMode mode, const char* file, int line, const char* format, ...) {
     const int MAX_USER_MESSAGE = 512;
-    
+    const int MAX_SERIAL_MESSAGE = 640;
+
+    // Static rather than alloca(): these buffers used to be carved out of the
+    // caller's stack on every log call, which overflows the 8 KB Arduino loop
+    // task deep in a call chain — newlib's %f path (_dtoa_r) is stack-hungry on
+    // its own. Neither buffer escapes this function, so a single shared copy is
+    // safe. Logging is not reentrant here (single-threaded callers, no logging
+    // from ISRs); if that ever changes this needs a lock.
+    static char user_message[MAX_USER_MESSAGE];
+    static char serial_buffer[MAX_SERIAL_MESSAGE];
+
     va_list args;
     va_start(args, format);
-    
+
     // Format user message with truncation
-    char* user_message = (char*)alloca(MAX_USER_MESSAGE);
     format_message_truncated(user_message, MAX_USER_MESSAGE, format, args);
     va_end(args);
-    
-    // Measure exact length needed for serial buffer
-    int serial_len = snprintf(nullptr, 0, "%s [%d]: %s", file, line, user_message) + 1;
-    char* serial_buffer = (char*)alloca(serial_len);
-    snprintf(serial_buffer, serial_len, "%s [%d]: %s", file, line, user_message);
-    
+
+    // Truncates rather than sizing to fit: the old code measured the exact
+    // length and alloca'd it, so a long file path grew the stack frame without
+    // bound.
+    snprintf(serial_buffer, MAX_SERIAL_MESSAGE, "%s [%d]: %s", file, line, user_message);
+
     switch (level) {
     case LOG_VERBOSE:
         Log.verboseln(serial_buffer);
