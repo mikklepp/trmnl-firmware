@@ -24,6 +24,7 @@
 #include <BQ27427.h>   // fuel gauge, for the device battery reading
 #include "buzzer.h"
 #include "ble_scan.h"
+#include "esp_sntp.h"
 #include "display.h"
 #include "IQS323.h"
 #include "iqs323_task.h"
@@ -283,23 +284,41 @@ static bool clock91_wifi_connect(void) {
 
 // ── NTP ──
 
+// Fill *out with the current local time.
+static void localtime_r_now(struct tm *out) {
+    time_t now = time(NULL);
+    localtime_r(&now, out);
+}
+
 static bool clock91_sync_time(void) {
+    // Clear the sync status first, so the wait below cannot observe a COMPLETED
+    // left over from an earlier sync in this boot.
+    sntp_set_sync_status(SNTP_SYNC_STATUS_RESET);
+
     // configTzTime, not configTime(0, 0, ...): the latter sets a UTC offset and
     // overwrites the TZ environment variable clock91_init() installed, so every
     // sync reverted the display to UTC — three hours behind Helsinki in summer.
     configTzTime(TIMEZONE, "time.google.com", "time.cloudflare.com");
 
+    // Wait for SNTP to actually land a packet, not merely for the clock to look
+    // plausible. getLocalTime() returns true as soon as the system time is past
+    // 2016, which the RTC already satisfies across a deep-sleep wake — so
+    // polling it accepted the pre-sync RTC value on the first iteration and
+    // returned "synced" without ever applying the NTP reply. That left the
+    // display running at whatever offset the RTC had drifted to.
     struct tm timeinfo = {};
-    for (int i = 0; i < 50; i++) {
-        if (getLocalTime(&timeinfo, 100)) {
+    for (int i = 0; i < 100; i++) { // up to ~10 s
+        if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
+            localtime_r_now(&timeinfo);
             Log_info("clock91: NTP synced: %04d-%02d-%02d %02d:%02d:%02d",
                      timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
                      timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
             return true;
         }
+        delay(100);
     }
 
-    Log_error("clock91: NTP sync failed");
+    Log_error("clock91: NTP sync failed (no SNTP reply in 10 s)");
     return false;
 }
 
