@@ -65,6 +65,7 @@ private:
 
   std::function<void()> _resetcallback;
   std::function<void()> _tickCallback = nullptr;
+  std::function<bool()> _abortCallback = nullptr;
   String _hostname = "";
 
   WifiCredentials _savedWifis[WIFI_MAX_SAVED_CREDS];
@@ -145,6 +146,13 @@ public:
   /// @brief Sets a callback invoked every portal loop iteration (approx. every 60 ms).
   ///        Use to poll hardware (e.g., touchbar) while the portal is blocking.
   void setPortalTickCallback(std::function<void()> func);
+
+  /// @brief Registers a callback polled while the portal waits for credentials.
+  ///        Return true to abort the portal and return from startPortal().
+  ///        The PORTAL_TIMEOUT is only a 15-minute backstop; without this an
+  ///        accidentally opened portal holds the display until someone submits
+  ///        credentials over WiFi.
+  void setAbortCallback(std::function<bool()> func);
 
   /// @brief Checks if there are saved WiFi credentials
   /// @return True if there are saved credentials, false otherwise.

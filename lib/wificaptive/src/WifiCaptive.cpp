@@ -152,6 +152,11 @@ bool WifiCaptive::startPortal() {
 
     if (_tickCallback) _tickCallback();
 
+    if (_abortCallback && _abortCallback()) {
+      Log_info("Portal aborted by callback");
+      break;
+    }
+
     if (_ssid == "") {
       delay(DNS_INTERVAL);
     } else {
@@ -310,6 +315,8 @@ wl_status_t WifiCaptive::connect(const WifiCredentials credentials) {
 void WifiCaptive::setResetSettingsCallback(std::function<void()> func) { _resetcallback = func; }
 
 void WifiCaptive::setPortalTickCallback(std::function<void()> func) { _tickCallback = func; }
+
+void WifiCaptive::setAbortCallback(std::function<bool()> func) { _abortCallback = func; }
 
 void WifiCaptive::setHostname(const String &hostname) { _hostname = hostname; }
 

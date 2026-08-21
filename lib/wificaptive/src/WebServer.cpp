@@ -7,6 +7,16 @@
 
 #include "WifiCaptive.h"
 
+#ifdef CLOCK91_MODE
+// BLE device settings surfaced by the /clock91 portal page. Kept in one table
+// so the GET and POST handlers cannot drift apart.
+static const char *const CLOCK91_PREF_KEYS[] = {
+    "v_solar_mac", "v_solar_key", "v_shunt_mac", "v_shunt_key",
+    "v_vebus_mac", "v_vebus_key", "ruuvi_0_mac", "ruuvi_1_mac",
+};
+static const int CLOCK91_PREF_KEY_COUNT = sizeof(CLOCK91_PREF_KEYS) / sizeof(CLOCK91_PREF_KEYS[0]);
+#endif
+
 void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP, WifiOperationCallbacks callbacks,
                     const String &modemMac) {
     //======================== Webserver ========================
@@ -66,6 +76,51 @@ void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP, WifiOperat
     response->addHeader("Content-Encoding", "gzip");
     request->send(response);
   });
+#ifdef CLOCK91_MODE
+  // clock91 device configuration: the MAC addresses and encryption keys of the
+  // Victron and Ruuvi BLE devices the clock listens to. Served from the portal
+  // so they can be set without a reflash.
+  server.on("/clock91", HTTP_GET, [&](AsyncWebServerRequest *request) {
+    AsyncWebServerResponse *response = request->beginResponse(200, "text/html", CLOCK91_HTML, CLOCK91_HTML_LEN);
+    response->addHeader("Content-Encoding", "gzip");
+    request->send(response);
+  });
+
+  server.on("/clock91/config", HTTP_GET, [](AsyncWebServerRequest *request) {
+    Preferences prefs;
+    prefs.begin("data", true);
+    String json = "{";
+    for (int i = 0; i < CLOCK91_PREF_KEY_COUNT; i++) {
+      String val = prefs.getString(CLOCK91_PREF_KEYS[i], "");
+      val.replace("\\", "\\\\");
+      val.replace("\"", "\\\"");
+      if (i > 0) json += ",";
+      json += "\"" + String(CLOCK91_PREF_KEYS[i]) + "\":\"" + val + "\"";
+    }
+    json += "}";
+    prefs.end();
+    request->send(200, "application/json", json);
+  });
+
+  AsyncCallbackJsonWebHandler *clock91Handler = new AsyncCallbackJsonWebHandler(
+    "/clock91/config", [](AsyncWebServerRequest *request, JsonVariant &json) {
+      JsonObject data = json.as<JsonObject>();
+      Preferences prefs;
+      prefs.begin("data", false);
+      for (int i = 0; i < CLOCK91_PREF_KEY_COUNT; i++) {
+        const char *key = CLOCK91_PREF_KEYS[i];
+        if (data[key].is<const char *>()) {
+          prefs.putString(key, data[key].as<const char *>());
+        } else {
+          prefs.remove(key);
+        }
+      }
+      prefs.end();
+      request->send(200, "application/json", "{\"ok\":true}");
+    });
+  server.addHandler(clock91Handler);
+#endif // CLOCK91_MODE
+
   server.on("/run-test", HTTP_GET, [](AsyncWebServerRequest *request) {
     Serial.println("Running sensor test from web...");
     String json = testTemperature();

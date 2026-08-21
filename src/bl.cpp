@@ -55,6 +55,9 @@
 #include "messages.h"
 #include "displayed_image.h"
 #include <globals.h>
+#ifdef CLOCK91_MODE
+#include "clock91.h"
+#endif
 const char *szHTTPErrors[] = {
     "HTTPS_NO_ERR",
     "HTTPS_RESET",
@@ -860,14 +863,36 @@ void bl_init(void)
     ESP.restart();
   }
 
+#ifndef CLOCK91_MODE
+  // clock91 registers its own touch callback in clock91_init() and translates
+  // the raw IQS323 gestures itself, so it must not consume the event here.
   if (gpio_wakeup) {
     process_iqs323_data();
   }
+#endif
 
   // For future
   // iqs323_task_set_data_callback(process_iqs323_data);
 
   Log_info("init time: %ld us", init_time);
+
+#ifdef CLOCK91_MODE
+  // Hand off to clock91. Everything the clock needs is up by now: display,
+  // filesystem, preferences and the IQS323 touch task.
+  //
+  // The fuel gauge is brought up here because bl_init()'s own gaugeInit() call
+  // sits further down, past the point this path returns from — without this the
+  // gauge is never initialised and device SOC always reads zero.
+  battery_count = detect_battery_count();
+  battery_charging = (power().chargingStatus() == ChargingStatus::CHARGING);
+  Log_info("BATTERY COUNT: %d", battery_count);
+  Log_info("BATTERY CHARGING: %s", battery_charging ? "YES" : "NO");
+  battery().gaugeInit();
+
+  clock91_init();
+  return; // clock91 drives everything from bl_process() -> clock91_loop()
+#endif
+
 #else // BOARD_TRMNL_X
 
   if (double_click)
@@ -1400,7 +1425,46 @@ void bl_init(void)
  */
 void bl_process(void)
 {
+#ifdef CLOCK91_MODE
+  clock91_loop();
+#endif
 }
+
+#ifdef CLOCK91_MODE
+// Deep sleep with a minute-aligned timer wake (see goToSleep()). goToSleep()
+// already puts the panel to sleep itself, so this is a thin named wrapper that
+// keeps clock91 off bl.cpp's internals.
+void bl_deep_sleep(void)
+{
+  goToSleep();
+}
+
+// True power-off: sleep until a touch wakes the device, with no timer armed.
+// goToSleepButtonOnly() skips the TRMNL X low-power preparation that
+// goToSleep() does, so do that here before handing over.
+void bl_hibernate(void)
+{
+  Log_info("Preparing IQS323 for sleep via task...");
+  if (!iqs323_task_prepare_sleep(5000)) {
+    Log.warning("IQS323 sleep preparation timeout - proceeding anyway\n");
+  }
+
+  // Configure gesture mode last so prepare_sleep's writeMM() cannot override it
+  iqs323_task_i2c_lock();
+  iqs323.setGestureConfig(touchbar_tap_mode, STOP);
+  iqs323_task_i2c_unlock();
+
+  iqs323_task_deinit();
+  Log_info("IQS323 is ready for sleep.");
+
+  esp_set_deep_sleep_wake_stub(*wakeup_stub);
+  display_sleep();
+  config_tca95535_pins_for_lp();
+  config_gpio_for_lp();
+
+  goToSleepButtonOnly();
+}
+#endif
 
 ApiDisplayInputs loadApiDisplayInputs(Preferences &preferences)
 {
@@ -2609,6 +2673,21 @@ void goToSleep(void)
 
   filesystem_deinit();
   uint32_t time_to_sleep = refreshInterval.seconds();
+#ifdef CLOCK91_MODE
+  // Sleep until the next whole minute to keep the clock aligned. getTime()
+  // returns epoch seconds, so (60 - now % 60) lands on the next :00 boundary
+  // regardless of how long this wake cycle took. Computed here rather than
+  // stored through refreshInterval so this minute-by-minute value never
+  // touches NVS. Falls back to the stored interval if the clock is unsynced.
+  {
+    uint32_t now = systemClock().getTime();
+    if (now > 0) {
+      time_to_sleep = 60 - (now % 60);
+      if (time_to_sleep < 5) // too close to the edge — skip to the next minute
+        time_to_sleep += 60;
+    }
+  }
+#endif
   iPrevWakeTime = millis() - startup_time; // save for statistics
   Log.info("%s [%d]: total awake time - %d ms\r\n", __FILE__, __LINE__, iPrevWakeTime); 
   Log.info("%s [%d]: time to sleep - %d\r\n", __FILE__, __LINE__, time_to_sleep);
