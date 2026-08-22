@@ -104,7 +104,12 @@ enum Gesture {
 // 26-27 count touch threshold, so no threshold that still admits a fingertip
 // could have rejected that. The ratio does: 521 vs 137 is 3.8x and passes,
 // whereas the near-equal deflections a two-handed grip produces do not.
-#define HOLD_DOMINANCE_EIGHTHS 12
+//
+// Measured: real centre presses separate by only ~1.2x (ch0 389 / ch1 503), not the
+// 1.5x this originally demanded, so every SETUP hold was rejected. CH1 has a neighbour
+// on both sides and can never separate as cleanly as CH0/CH2. 1.125x clears real presses
+// and still rejects the 3.8x grip.
+#define HOLD_DOMINANCE_EIGHTHS 9
 
 static Gesture hold_channel_gesture(IQS323& iqs) {
     static const iqs323_channel_e CH[3] = {IQS323_CH0, IQS323_CH1, IQS323_CH2};
@@ -559,6 +564,45 @@ static void clock91_partial_cycle(void) {
 
 // ── Captive portal ──
 
+// Normal screen with no fetched data: real clock/date/station, dashes elsewhere.
+// Used to acknowledge a SETUP exit before the slow post-portal work.
+static void clock91_render_normal_screen(void) {
+    struct tm ti;
+    time_t now = time(NULL);
+    localtime_r(&now, &ti);
+
+    int station_index = preferences.getUInt("station_idx", 0);
+    if (station_index >= STATION_COUNT) station_index = 0;
+
+    DisplayState state = {};
+    state.hour = ti.tm_hour;
+    state.minute = ti.tm_min;
+    state.day = ti.tm_mday;
+    state.month = ti.tm_mon + 1;
+    state.wday = ti.tm_wday;
+    state.station_name = STATIONS[station_index].name;
+    state.solar_w = NAN;
+    state.ac_w = NAN;
+    state.house_w = NAN;
+    state.engine_v = NAN;
+    state.saloon_temp = NAN;
+    state.saloon_humidity = NAN;
+    state.icebox_temp = NAN;
+    state.battery_pct = -1;
+    state.device_pct = -1;
+    state.timer_active = false;
+    state.otg_enabled = otg_enabled;
+    state.days = NULL;
+    state.history = NULL;
+
+    buildLayoutInto(g_dl, state);
+    DrawList& dl = g_dl;
+    renderFull(dl);
+
+    prev_hour = ti.tm_hour;
+    prev_minute = ti.tm_min;
+}
+
 static void clock91_render_setup_screen(void) {
     // Show setup indicator on screen while portal is active.
     // Use current time if available, dashes for data fields.
@@ -624,17 +668,26 @@ static void clock91_start_portal(void) {
     // reach it with a phone. Requiring a hold rather than any touch keeps a
     // stray tap from cancelling a setup in progress.
     //
-    // Ignores touches for the first few seconds: the hold that opened the
-    // portal is often still in progress here and would cancel it immediately.
+    // WifiCaptive polls this in a tight loop. touch_pending is set by the RDY
+    // interrupt as soon as any data is ready, long before a HOLD matures, so
+    // clearing it on every poll threw the press away before it became a gesture.
+    // Only consume it once getSliderEvent() actually returns one, and rate-limit
+    // the poll: getSliderEvent() is read-and-clear and races the sensor latch.
     {
         uint32_t portal_start = millis();
         WifiCaptivePortal.setAbortCallback([portal_start]() -> bool {
-            if (millis() - portal_start < 3000) {
+            static uint32_t last_poll_ms = 0;
+
+            // The opening hold is often still in progress here.
+            if (millis() - portal_start < 5000) {
                 touch_pending = false;
                 return false;
             }
             if (!touch_pending) return false;
-            touch_pending = false;
+
+            uint32_t now = millis();
+            if (now - last_poll_ms < 100) return false;
+            last_poll_ms = now;
 
             iqs323_task_i2c_lock();
             bool has_gesture = iqs323.getSliderEvent();
@@ -642,8 +695,19 @@ static void clock91_start_portal(void) {
                 has_gesture ? iqs323.getGestureType() : IQS323_GESTURE_NONE;
             iqs323_task_i2c_unlock();
 
+            // Leave touch_pending set so a still-forming hold gets another poll.
+            if (!has_gesture) return false;
+            touch_pending = false;
+
+            Log_info("clock91: portal abort poll: gesture ev=%d", (int)ev);
+
             if (ev == IQS323_GESTURE_HOLD) {
                 Log_info("clock91: portal cancelled by hold gesture");
+
+                // Paint here, before startPortal()'s teardown and its ~15 s
+                // credential-less reconnect, so the gesture is acknowledged
+                // immediately instead of ~35 s later.
+                clock91_render_normal_screen();
                 return true;
             }
             return false;

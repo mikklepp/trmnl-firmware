@@ -12,6 +12,16 @@
 
 extern Preferences preferences;
 
+// Arduino's startup calls esp_bt_controller_mem_release(ESP_BT_MODE_BTDM) unless
+// btInUse() returns true (esp32-hal-misc.c initArduino()). btInUse() is weak and
+// backed by _btLibraryInUse, which only gets set by Arduino's own BluetoothSerial/
+// BLE libraries — we use esp-nimble-cpp directly, so it stayed false and the
+// controller's dedicated DRAM was handed to the general heap before setup() ran.
+// esp_bt_controller_init() then built its environment over memory it no longer
+// owned and died in r_llm_env_init -> malloc_internal_wrapper (LoadProhibited,
+// EXCVADDR=0xffbb0b8e). Overriding the weak symbol keeps the region reserved.
+extern "C" bool btInUse(void) { return true; }
+
 // Victron company ID
 static const uint16_t VICTRON_COMPANY_ID = 0x02E1;
 // Ruuvi company ID
@@ -218,7 +228,17 @@ BleScanResult ble_scan_run(int duration_seconds) {
     Log_info("BLE: starting %ds scan for %d devices (mask=0x%02X)",
              duration_seconds, __builtin_popcount(devices_expected_mask), devices_expected_mask);
 
-    NimBLEDevice::init("");
+    // Init once and leave the stack up. NimBLEDevice::deinit(true) asserts in
+    // ble_hs_deinit -> ble_mqueue_deinit -> npl_freertos_event_deinit
+    // ("assertion:ev->event", npl_os_freertos.c:273): the host teardown path
+    // frees an event that was never initialised. Scanning does not need a fresh
+    // stack each cycle, so init once and only start/stop the scan.
+    static bool nimble_ready = false;
+    if (!nimble_ready) {
+        NimBLEDevice::init("");
+        nimble_ready = true;
+    }
+
     NimBLEScan* scan = NimBLEDevice::getScan();
     scan->setScanCallbacks(&scanCallbacks, true);  // true = report duplicates
     scan->setActiveScan(false);
@@ -242,7 +262,6 @@ BleScanResult ble_scan_run(int duration_seconds) {
 
     scan->stop();
     scan->clearResults();
-    NimBLEDevice::deinit(true);
 
     Log_info("BLE: scan complete, heard=0x%02X/0x%02X (%d/%d devices)",
              devices_heard, devices_expected_mask,
