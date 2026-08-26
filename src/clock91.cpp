@@ -3,6 +3,8 @@
 #ifdef CLOCK91_MODE
 
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <WiFi.h>
 #include <WifiCaptive.h>
 #include <Preferences.h>
@@ -25,6 +27,7 @@
 #include "buzzer.h"
 #include "ble_scan.h"
 #include "esp_sntp.h"
+#include <esp_wifi.h>
 #include "display.h"
 #include "IQS323.h"
 #include "iqs323_task.h"
@@ -51,9 +54,6 @@ static bool otg_enabled = false;
 
 static volatile bool touch_pending = false;
 
-static void IRAM_ATTR on_iqs323_data(void) {
-    touch_pending = true;
-}
 
 // ── Gesture map ──
 //
@@ -160,7 +160,28 @@ static Gesture hold_channel_gesture(IQS323& iqs) {
     return GESTURE_NONE;
 }
 
+// Raw IQS323 event name, for touch tuning. hold_channel_gesture() logs its own
+// per-channel detail, so HOLD is deliberately not logged here as well.
+static const char* iqs323_event_name(iqs323_gesture_events ev) {
+    switch (ev) {
+    case IQS323_GESTURE_NONE:           return "none";
+    case IQS323_GESTURE_TAP:            return "tap";
+    case IQS323_GESTURE_SWIPE_POSITIVE: return "swipe+";
+    case IQS323_GESTURE_SWIPE_NEGATIVE: return "swipe-";
+    case IQS323_GESTURE_FLICK_POSITIVE: return "flick+";
+    case IQS323_GESTURE_FLICK_NEGATIVE: return "flick-";
+    case IQS323_GESTURE_HOLD:           return "hold";
+    default:                            return "?";
+    }
+}
+
 static Gesture translate_gesture(iqs323_gesture_events ev, IQS323& iqs) {
+    // HOLD logs inside hold_channel_gesture() with its channel deflections;
+    // everything else gets its line here so swipes/flicks/taps are visible too.
+    if (ev != IQS323_GESTURE_HOLD) {
+        Log_info("clock91: gesture event=%s(%d)", iqs323_event_name(ev), (int)ev);
+    }
+
     switch (ev) {
     case IQS323_GESTURE_SWIPE_NEGATIVE:
     case IQS323_GESTURE_FLICK_NEGATIVE:
@@ -187,85 +208,145 @@ static Gesture clock91_poll_gesture(void) {
     if (has_gesture) {
         iqs323_gesture_events ev = iqs323.getGestureType();
         result = translate_gesture(ev, iqs323);
+    } else {
+        // The sensor signalled but no gesture had matured by the time we read.
+        // Normal for a press still forming; a run of these with no gesture
+        // following is the signature of a mistuned threshold.
+        Log_info("clock91: touch signalled, no slider event");
     }
     iqs323_task_i2c_unlock();
     return result;
 }
 
-// ── Light sleep ──
+// ── Wake events ──
+//
+// One binary semaphore is the whole wake path. Two things can end a wait: the
+// touch sensor firing, or the deadline passing. xSemaphoreTake with a timeout
+// distinguishes them in a single blocking call — pdTRUE means a signal arrived,
+// pdFALSE means the timeout expired — so callers never have to infer the cause
+// afterwards.
+//
+// Why a semaphore rather than a task notification: the notification API targets
+// a specific TaskHandle_t, which means whoever signals has to know who is
+// waiting. That coupling is what made the old code fragile. The semaphore is
+// addressed by the event, not the waiter, so the producer side stays correct no
+// matter which task ends up calling clock91_wait().
+//
+// Binary, not counting: a burst of sensor activity during one wait should
+// produce one wake, not a backlog that spins the loop once per event. The
+// semaphore also latches, so a touch landing while we are busy is remembered
+// and taken immediately by the next wait instead of being lost.
+static SemaphoreHandle_t wake_sem = NULL;
 
-static void clock91_sleep(uint32_t seconds) {
-#ifdef DO_NOT_LIGHT_SLEEP
-    // Debug builds busy-wait instead of sleeping so the USB serial link stays
-    // up. Break out as soon as the touch callback fires, otherwise a gesture
-    // would sit unnoticed until the next minute boundary and look like it was
-    // ignored. Production (light sleep) gets the same responsiveness from the
-    // GPIO wake below.
-    for (uint32_t i = 0; i < seconds * 10 && !touch_pending; i++) {
-        delay(100);
+typedef enum {
+    WAKE_TIMEOUT = 0,  // deadline expired, no touch
+    WAKE_TOUCH,        // sensor signalled
+} WakeReason;
+
+static void clock91_wake_init(void) {
+    if (wake_sem == NULL) {
+        wake_sem = xSemaphoreCreateBinary();
+        configASSERT(wake_sem != NULL);
     }
-#else
-    // Lock I2C to prevent IQS323 task from being frozen mid-transaction
-    iqs323_task_i2c_lock();
+}
 
-    // Set event mode: IQS323 only fires RDY on touch events (not streaming)
-    iqs323.setEventMode(STOP);
+// Signal a touch. Called from the IQS323 *task* (not an ISR — see
+// iqs323_task_set_data_callback), with that task's mutex held, so this must not
+// block and must not touch I2C. xSemaphoreGive satisfies both: it is O(1), it
+// never waits, and on an already-signalled binary semaphore it is a no-op
+// rather than an error.
+static void clock91_wake_signal_touch(void) {
+    touch_pending = true;
+    if (wake_sem) xSemaphoreGive(wake_sem);
+}
 
-    // Configure wake sources
-    esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL);
-    gpio_wakeup_enable((gpio_num_t)PIN_INTERRUPT, GPIO_INTR_LOW_LEVEL);
-    esp_sleep_enable_gpio_wakeup();
+// Runs in IQS323 task context with that task's mutex held — keep it brief and
+// non-blocking; see clock91_wake_signal_touch().
+static void on_iqs323_data(void) {
+    clock91_wake_signal_touch();
+}
 
-    esp_light_sleep_start();
+// Block until a touch arrives or `seconds` elapse, and report which happened.
+//
+// The chip is not put to sleep here. Under CONFIG_PM_ENABLE with
+// CONFIG_FREERTOS_USE_TICKLESS_IDLE, the IDF idle task drops the SoC into light
+// sleep once every task is blocked and restores it for the next deadline.
+// Blocking properly is therefore the entire job — any busy-wait here would
+// defeat the PM framework by keeping a runnable task on the scheduler.
+static WakeReason clock91_wait_ms(uint32_t ms) {
+    clock91_wake_init();
 
-    // Back to streaming mode
-    iqs323.clearEventMode(STOP);
-    iqs323_task_i2c_unlock();
-#endif
+    return xSemaphoreTake(wake_sem, pdMS_TO_TICKS(ms)) == pdTRUE
+               ? WAKE_TOUCH
+               : WAKE_TIMEOUT;
+}
+
+static WakeReason clock91_wait(uint32_t seconds) {
+    return clock91_wait_ms(seconds * 1000U);
+}
+
+// Discard any gesture that is already queued, signal included.
+//
+// Clearing touch_pending alone is not enough: the semaphore latches, so a
+// dropped touch would still satisfy the next clock91_wait() immediately and
+// burn a cycle on a gesture that was deliberately thrown away. Both halves of
+// the wake state have to be cleared together, which is why this is a helper
+// rather than an open-coded assignment at each site.
+static void clock91_wake_discard(void) {
+    clock91_wake_init();
+    touch_pending = false;
+    xSemaphoreTake(wake_sem, 0);
 }
 
 // ── WiFi ──
 
-// Drop the WiFi connection so BLE can use the radio, without tearing the
-// driver down.
+// Park the WiFi link in DTIM-based modem sleep instead of dropping the
+// association.
 //
-// Any route into esp_wifi_deinit() hangs on this build
-// (CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y with CONFIG_BT_ENABLED=y): the task
-// stops making progress and dies to the watchdog, with no panic to point at
-// it. Both WiFi.mode(WIFI_OFF) and WiFi.disconnect(true) reach it.
+// This used to call WiFi.disconnect(false) after every cycle and reassociate on
+// the next one. Staying associated removes that reconnect (DHCP + ARP, and a
+// full auth/assoc handshake) from every 15-minute full cycle, and lets the AP
+// buffer for us rather than treating each cycle as a new station.
 //
-// Unreachable until WiFi credentials were saved — clock91_wifi_connect() bails
-// out early without them — which is why this survived every earlier test on
-// this hardware and only appeared after the captive portal succeeded.
+// WIFI_PS_MAX_MODEM is what tells the AP we are power-saving: the station sets
+// the power-management bit in its frames, so the AP holds our traffic and
+// announces it in the TIM. The radio then only wakes on our DTIM beacon instead
+// of staying in receive. WIFI_PS_MIN_MODEM wakes every beacon, which is most of
+// the receive cost with none of the latency benefit here, so MAX is the right
+// end of that trade for a device that talks once per quarter hour.
 //
-// Leaving the driver initialised costs some idle current versus a full deinit.
-// If that ever matters, the deinit belongs once before sleep, not on every
-// cycle — and it will need solving for coexistence either way.
-static void clock91_wifi_off(void) {
+// Note the driver is deliberately never deinitialised. Any route into
+// esp_wifi_deinit() hangs on this build (CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+// with CONFIG_BT_ENABLED=y): the task stops making progress and dies to the
+// watchdog, with no panic to point at it. Both WiFi.mode(WIFI_OFF) and
+// WiFi.disconnect(true) reach it. That is why this parks the link rather than
+// closing it.
+static void clock91_wifi_powersave(void) {
     if (WiFi.getMode() == WIFI_MODE_NULL) return;
 
-    // disconnect(false), NOT disconnect(true). The bool is `wifioff`, and
-    // disconnect(true) calls STA.end() → WiFi.enableSTA(false) → espWiFiStop()
-    // → esp_wifi_deinit(): a full driver teardown. On this build
-    // (CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y, CONFIG_BT_ENABLED=y) that never
-    // returns, and the task dies to the watchdog — "PRO CPU has been reset by
-    // WDT" with no panic and no backtrace. Traced by bracketing the call: the
-    // log line after it never printed, while stack headroom was a comfortable
-    // 6284 bytes, ruling out overflow.
-    //
-    // disconnect(false) drops the association and leaves the driver up, which
-    // is all BLE needs — WiFi/BLE coexistence shares the radio by design.
-    Log_info("TRACE: wifi_off pre-disconnect mode=%d status=%d",
-             (int)WiFi.getMode(), (int)WiFi.status());
-    WiFi.disconnect(false);
-    Log_info("TRACE: wifi_off post-disconnect");
-
-    unsigned long deadline = millis() + 1000;
-    while (WiFi.status() == WL_CONNECTED && millis() < deadline) {
-        delay(10);
+    esp_err_t err = esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+    if (err != ESP_OK) {
+        Log_error("clock91: esp_wifi_set_ps(MAX_MODEM) failed: %d", (int)err);
+        return;
     }
-    Log_info("clock91: WiFi disconnected (mode=%d, driver left up for coex)",
-             (int)WiFi.getMode());
+
+    Log_info("clock91: WiFi power-save on (associated=%d, DTIM modem sleep)",
+             WiFi.status() == WL_CONNECTED);
+}
+
+// Leave power-save for the duration of a transfer.
+//
+// MAX_MODEM adds up to a DTIM interval of latency to every received frame,
+// which compounds badly across the many round trips of a TLS handshake plus the
+// FMI fetch. Callers must pair this with clock91_wifi_powersave() so the link
+// goes back to sleeping — see clock91_full_cycle().
+static void clock91_wifi_active(void) {
+    if (WiFi.getMode() == WIFI_MODE_NULL) return;
+
+    esp_err_t err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (err != ESP_OK) {
+        Log_error("clock91: esp_wifi_set_ps(NONE) failed: %d", (int)err);
+    }
 }
 
 static bool clock91_wifi_connect(void) {
@@ -274,13 +355,35 @@ static bool clock91_wifi_connect(void) {
         return false;
     }
 
+    // Already associated from a previous cycle — the link is only parked in
+    // modem sleep, so there is nothing to reconnect. Just take it out of
+    // power-save for the transfer.
+    if (WiFi.status() == WL_CONNECTED) {
+        clock91_wifi_active();
+        Log_info("clock91: WiFi already associated, IP=%s RSSI=%d",
+                 WiFi.localIP().toString().c_str(), WiFi.RSSI());
+        return true;
+    }
+
     WiFi.mode(WIFI_STA);
+
+    // Keep the association across our own light sleeps: without this the driver
+    // drops the link whenever the station goes idle, which is exactly what we
+    // are trying to avoid.
+    WiFi.setAutoReconnect(true);
+
     int res = WifiCaptivePortal.autoConnect();
     if (!res) {
+        // Deliberately no WiFi.mode(WIFI_OFF) here: it routes into
+        // esp_wifi_deinit(), which hangs this build under WiFi/BLE coexistence
+        // (see clock91_wifi_powersave). Park the idle driver in power-save
+        // instead, and let the next cycle retry the association.
         Log_error("clock91: WiFi connect failed (status=%d)", WiFi.status());
-        WiFi.mode(WIFI_OFF);
+        clock91_wifi_powersave();
         return false;
     }
+
+    clock91_wifi_active();
 
     Log_info("clock91: WiFi connected, IP=%s RSSI=%d",
              WiFi.localIP().toString().c_str(), WiFi.RSSI());
@@ -485,11 +588,12 @@ static void clock91_full_cycle(void) {
         clock91_fetch_fmi(station, state, g_days, &g_history);
         Log_info("TRACE: fetch_fmi done (stack free=%u)",
                  (unsigned)uxTaskGetStackHighWaterMark(NULL));
-        clock91_wifi_off();
-        Log_info("TRACE: wifi_off done");
+        clock91_wifi_powersave();
+        Log_info("TRACE: wifi powersave done");
     }
 
-    // BLE scan (runs after WiFi is off — they share the radio)
+    // BLE scan (runs after WiFi is parked in modem sleep — they share the
+    // radio, and coexistence arbitrates between them)
     Log_info("TRACE: ble_scan enter");
     BleScanResult ble = ble_scan_run(10);
     Log_info("TRACE: ble_scan done");
@@ -720,7 +824,7 @@ static void clock91_start_portal(void) {
 
     if (WiFi.status() == WL_CONNECTED) {
         Log_info("clock91: portal done, WiFi connected");
-        clock91_wifi_off();
+        clock91_wifi_powersave();
     } else {
         Log_info("clock91: portal done, no WiFi");
     }
@@ -730,7 +834,7 @@ static void clock91_start_portal(void) {
     // Drop any gesture that arrived while the portal was up — otherwise the
     // hold that opened it is still queued and immediately reopens it.
     last_portal_exit_ms = millis();
-    touch_pending = false;
+    clock91_wake_discard();
 }
 
 // ── Gesture handling ──
@@ -858,7 +962,7 @@ static void clock91_timer_loop(void) {
     timer.remaining = -1;
     timerStart(&timer);
 
-    touch_pending = false;
+    clock91_wake_discard();
 
     uint32_t start_ms = millis();
     int frame = 0;
@@ -906,12 +1010,14 @@ static void clock91_timer_loop(void) {
             Log_info("clock91: timer prev preset %ds", timer.total);
         }
 
-        // Sleep until the next whole second boundary
+        // Wait for the next whole second boundary, or a gesture, whichever
+        // comes first. This waits in milliseconds: the old second-granularity
+        // helper rounded every sub-second remainder up to a full second, so the
+        // countdown drifted later on every tick.
         uint32_t next_s_ms = start_ms + ((uint32_t)(elapsed_s + 1) * 1000);
         uint32_t now_ms = millis();
         if (next_s_ms > now_ms) {
-            uint32_t wait_ms = next_s_ms - now_ms;
-            clock91_sleep(wait_ms / 1000 > 0 ? wait_ms / 1000 : 1);
+            clock91_wait_ms(next_s_ms - now_ms);
         }
     }
 
@@ -919,6 +1025,35 @@ static void clock91_timer_loop(void) {
         Log_info("clock91: timer done — buzzing");
         buzzer_timer();
     }
+}
+
+// ── Power logging ──
+
+// One coulomb-counter reading per cycle, so autonomy can be measured from the
+// serial log without a lab PSU.
+//
+// capacityRemain (REMAIN_UF) is the number that matters: it is coulomb-counted,
+// so unlike the displayed percentage it is not affected by BYPASS_BQ27427_SOC
+// deriving SOC from voltage. Unfiltered rather than REMAIN because the filtered
+// value is smoothed for display and lags the small per-cycle deltas this is
+// meant to expose.
+//
+// current() is signed: negative = discharging, positive = charging. It is an
+// average over the gauge's own window, not an instantaneous reading, so a
+// single sample taken during our ~1 s awake window is not the awake current —
+// only the trend across many cycles is meaningful.
+static void clock91_log_power(void) {
+    if (!lipo._initialized) {
+        Log_info("clock91: power gauge=uninit");
+        return;
+    }
+
+    Log_info("clock91: power remain=%umAh full=%umAh v=%umV i=%dmA soc=%u%%",
+             (unsigned)lipo.capacity(REMAIN_UF),
+             (unsigned)lipo.capacity(FULL),
+             (unsigned)lipo.voltage(),
+             (int)lipo.current(AVG),
+             (unsigned)lipo.soc(FILTERED));
 }
 
 // ── Deep sleep reboot (heap reclaim) ──
@@ -958,8 +1093,9 @@ void clock91_init(void) {
     buzzer_init();
     ble_config_init();
 
-    // Register touch callback (persists across light sleep)
-    touch_pending = false;
+    // Create the wake semaphore before registering the callback, so the first
+    // signal cannot arrive with wake_sem still NULL.
+    clock91_wake_discard();
     iqs323_task_set_data_callback(on_iqs323_data);
 
     // First cycle is always full
@@ -973,24 +1109,18 @@ void clock91_loop(void) {
     uint32_t sleep_secs = 60 - (now % 60);
     if (sleep_secs < 5) sleep_secs += 60;
 
-    Log_info("clock91: sleeping %lu s", (unsigned long)sleep_secs);
-    clock91_sleep(sleep_secs);
+    Log_info("clock91: waiting %lu s", (unsigned long)sleep_secs);
+    WakeReason reason = clock91_wait(sleep_secs);
 
-    // Determine wake cause
-    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-    bool touch_wake = (cause == ESP_SLEEP_WAKEUP_GPIO);
-
-    // Poll on every wake, not just GPIO wakes. The touch callback sets
-    // touch_pending whenever the IQS323 signals, but gating the poll on
-    // touch_wake threw those away on a timer wake — and on DO_NOT_LIGHT_SLEEP
-    // builds clock91_sleep() is a plain delay(), so the cause is never
-    // ESP_SLEEP_WAKEUP_GPIO and no gesture could ever be seen. Polling
-    // unconditionally also picks up gestures made while the device was awake.
+    // Poll whenever touch_pending is set, not only when this wait was the one
+    // that saw the touch: a gesture that landed while the previous cycle was
+    // still rendering sets the flag without any wait observing it. The wake
+    // reason is only used to label the log line.
     Gesture gesture = GESTURE_NONE;
     if (touch_pending) {
         gesture = clock91_poll_gesture();
         Log_info("clock91: gesture=%d (%s wake)", gesture,
-                 touch_wake ? "touch" : "timer");
+                 reason == WAKE_TOUCH ? "touch" : "timer");
     }
 
     GestureResult gr = clock91_handle_gesture(gesture);
@@ -1031,6 +1161,8 @@ void clock91_loop(void) {
     }
 
     bool full = station_changed || (ti.tm_min % 15 == 0);
+
+    clock91_log_power();
 
     Log_info("clock91: %02d:%02d %s cycle%s",
              ti.tm_hour, ti.tm_min, full ? "FULL" : "partial",
