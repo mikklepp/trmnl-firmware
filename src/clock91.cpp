@@ -349,20 +349,43 @@ static void clock91_wifi_active(void) {
     }
 }
 
-static bool clock91_wifi_connect(void) {
-    if (!WifiCaptivePortal.isSaved()) {
-        Log_info("clock91: no WiFi credentials (use hold gesture to configure)");
-        return false;
-    }
+// Cached result of WifiCaptivePortal.isSaved().
+//
+// isSaved() re-reads all of NVS to answer one question: does slot 0 have an
+// SSID? It calls readWifiCredentials(), which sweeps WIFI_MAX_SAVED_CREDS slots
+// x 11 keys. Most of those keys are unset on a normal install (WPA-enterprise
+// and static-IP fields), and Preferences logs every miss at ERROR level, so a
+// single call produced ~35 nvs_get_str error lines per cycle — noise that
+// CORE_DEBUG_LEVEL cannot filter because it is logged as an error.
+//
+// Credentials only change by going through the captive portal, so the answer is
+// stable for the life of the boot. Cache it, and let clock91_start_portal()
+// invalidate the cache when it has actually run.
+static int wifi_saved_cache = -1;  // -1 unknown, 0 no, 1 yes
 
-    // Already associated from a previous cycle — the link is only parked in
-    // modem sleep, so there is nothing to reconnect. Just take it out of
-    // power-save for the transfer.
+static void clock91_wifi_invalidate_saved(void) { wifi_saved_cache = -1; }
+
+static bool clock91_wifi_saved(void) {
+    if (wifi_saved_cache < 0) {
+        wifi_saved_cache = WifiCaptivePortal.isSaved() ? 1 : 0;
+    }
+    return wifi_saved_cache == 1;
+}
+
+static bool clock91_wifi_connect(void) {
+    // Check the association before the credential lookup: when the link is
+    // already up from a previous cycle, whether credentials are on disk is not
+    // a question worth asking.
     if (WiFi.status() == WL_CONNECTED) {
         clock91_wifi_active();
         Log_info("clock91: WiFi already associated, IP=%s RSSI=%d",
                  WiFi.localIP().toString().c_str(), WiFi.RSSI());
         return true;
+    }
+
+    if (!clock91_wifi_saved()) {
+        Log_info("clock91: no WiFi credentials (use hold gesture to configure)");
+        return false;
     }
 
     WiFi.mode(WIFI_STA);
@@ -829,6 +852,10 @@ static void clock91_start_portal(void) {
         Log_info("clock91: portal done, no WiFi");
     }
 
+    // The portal may have written new credentials, so the cached isSaved()
+    // answer is no longer valid.
+    clock91_wifi_invalidate_saved();
+
     ble_config_reload();
 
     // Drop any gesture that arrived while the portal was up — otherwise the
@@ -1048,12 +1075,23 @@ static void clock91_log_power(void) {
         return;
     }
 
-    Log_info("clock91: power remain=%umAh full=%umAh v=%umV i=%dmA soc=%u%%",
+    // flags() carries ITPOR: set when Impedance Track has been reset and its
+    // SOC output is not yet trustworthy. design= is logged alongside full= to
+    // show whether the gauge has learned a real full capacity or is still
+    // reporting the configured design value.
+    uint16_t fl = lipo.flags();
+    Log_info("clock91: power remain=%umAh full=%umAh design=%umAh v=%umV i=%dmA "
+             "itsoc=%u%% flags=0x%04X%s%s%s",
              (unsigned)lipo.capacity(REMAIN_UF),
              (unsigned)lipo.capacity(FULL),
+             (unsigned)lipo.capacity(DESIGN),
              (unsigned)lipo.voltage(),
              (int)lipo.current(AVG),
-             (unsigned)lipo.soc(FILTERED));
+             (unsigned)lipo.soc(FILTERED),
+             (unsigned)fl,
+             (fl & BQ27427_FLAG_ITPOR) ? " ITPOR" : "",
+             (fl & BQ27427_FLAG_FC)    ? " FC"    : "",
+             (fl & BQ27427_FLAG_DSG)   ? " DSG"   : "");
 }
 
 // ── Deep sleep reboot (heap reclaim) ──
