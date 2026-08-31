@@ -222,10 +222,22 @@ void BQ27427_reset()
     Serial.println("BQ27427 reset performed");
 }
 
-// State of charge (%) from the BQ27427. With BYPASS_BQ27427_SOC the gauge's
-// SoC is ignored and estimated from the measured voltage instead.
+// State of charge (%) from the BQ27427, or estimated from voltage when
+// BYPASS_BQ27427_SOC is set. clock91 always prefers the gauge.
 int getLipoSOC() {
-#ifdef BYPASS_BQ27427_SOC
+#if defined(CLOCK91_MODE)
+  // Use the gauge's coulomb count, not the voltage estimate below: measured
+  // 3862 mV read as 72 % there against the gauge's 10 %. ITPOR means the
+  // algorithm lost its state, so fall back to voltage only then.
+  if (lipo.itporFlag()) {
+    float voltage = lipo.voltage() / 1000.0f;
+    int pct = (int)((voltage - 3.0f) / 0.012f + 0.5f);
+    if (pct > 100) pct = 100;
+    if (pct < 1) pct = 1;
+    return pct;
+  }
+  return lipo.soc(FILTERED);
+#elif defined(BYPASS_BQ27427_SOC)
   // Mirrors the server's percent_charged_calculation: map 3.0 V onto 0 % at
   // 0.012 V per percent, with plateaus near full charge (4.08 V follows a
   // full charge) and a 1 % floor.

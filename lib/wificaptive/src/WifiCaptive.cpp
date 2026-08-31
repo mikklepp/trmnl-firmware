@@ -14,6 +14,7 @@
 #include "wifi-helpers.h"
 void goToSleep(void);
 void saveShipmentStarted(void);
+bool checkIfAlreadyShipped(void);
 void showMessageWithLogo(MSG message_type);
 // 15 minute timeout to prevent dead batteries
 #define PORTAL_TIMEOUT (15 * 60 * 1000)
@@ -247,6 +248,14 @@ bool WifiCaptive::startPortal() {
 // Take different action for timeout (go to sleep)
   if ((millis() - lTime) > PORTAL_TIMEOUT) {
 #ifdef BOARD_TRMNL_X
+    // Shipping mode is a factory bench state: it spins until USB is unplugged,
+    // then sleeps until a charger appears. On a unit already in the field that
+    // turns an unanswered portal into a device only a charger can revive.
+    if (checkIfAlreadyShipped()) {
+      showMessageWithLogo(CAPTIVE_WIFI_TIMEOUT);
+      goToSleep();
+      return succesfullyConnected;
+    }
     if (power().usbStatus() == UsbStatus::CONNECTED) {
       showMessageWithLogo(READY_TO_SHIP);
       while (power().usbStatus() == UsbStatus::CONNECTED) {
