@@ -777,6 +777,27 @@ static void clock91_render_setup_screen(void) {
 static uint32_t last_portal_exit_ms = 0;
 static const uint32_t PORTAL_REENTRY_GUARD_MS = 30000;
 
+// Give up on an unattended portal well before WifiCaptive's own 15-minute
+// PORTAL_TIMEOUT, because reaching that timeout is *destructive*: startPortal()
+// answers it with showMessageWithLogo(SHIPPING_MODE) + saveShipmentStarted() +
+// enter_shipment_sleep() (WifiCaptive.cpp:248). That is the factory shipping
+// path — a while(true) light-sleep loop in display.cpp that only exits on
+// charger detect, with the state persisted to the "qa" NVS namespace so it
+// survives reboot and battery death. Neither touch nor timer brings the device
+// back; it is unreachable until someone attaches USB.
+//
+// That backstop assumes a human is standing next to the device. clock91 spends
+// its life unattended on a boat, and the SETUP hold is easy to trigger by
+// accident, so the assumption does not hold. Seen on hardware: a stray gesture
+// opened the portal, nobody answered, and 15 minutes later the device had
+// shipped itself and killed an open battery-autonomy run.
+//
+// Aborting via the callback exits the portal loop through its `break`, which
+// leaves millis()-lTime < PORTAL_TIMEOUT, so the shipping branch is skipped.
+// The abort must therefore fire strictly before PORTAL_TIMEOUT — keep a wide
+// margin. Five minutes is still ample for a human with a phone.
+static const uint32_t PORTAL_UNATTENDED_TIMEOUT_MS = 5 * 60 * 1000;
+
 static void clock91_start_portal(void) {
     if (last_portal_exit_ms != 0 &&
         (millis() - last_portal_exit_ms) < PORTAL_REENTRY_GUARD_MS) {
@@ -804,6 +825,17 @@ static void clock91_start_portal(void) {
         uint32_t portal_start = millis();
         WifiCaptivePortal.setAbortCallback([portal_start]() -> bool {
             static uint32_t last_poll_ms = 0;
+
+            // Bail out before WifiCaptive's destructive 15-minute timeout. This
+            // is checked first and unconditionally: it must not depend on touch
+            // activity, since the whole point is that nobody is here.
+            if (millis() - portal_start > PORTAL_UNATTENDED_TIMEOUT_MS) {
+                Log_info("clock91: portal unattended for %lu s, aborting before "
+                         "the shipping-mode timeout",
+                         (unsigned long)((millis() - portal_start) / 1000));
+                clock91_render_normal_screen();
+                return true;
+            }
 
             // The opening hold is often still in progress here.
             if (millis() - portal_start < 5000) {
