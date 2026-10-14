@@ -23,7 +23,8 @@
 #include "sunset.h"
 #include "alarm.h"
 #include "timer.h"
-#include <BQ27427.h>   // fuel gauge, for the device battery reading
+#include <BQ27427.h>   // fuel gauge, for the raw per-cycle power log
+#include <battery.h>   // BQ27427Battery snapshot, for the device battery reading
 #include "buzzer.h"
 #include "ble_scan.h"
 #include "esp_sntp.h"
@@ -646,12 +647,12 @@ static void clock91_full_cycle(void) {
     }
 
     state.battery_pct = ble.shunt.valid && !isnan(ble.shunt.soc) ? (int)ble.shunt.soc : -1;
-    // TRMNL's own battery. getLipoSOC() is upstream's reading: with
-    // BYPASS_BQ27427_SOC (set by both TRMNL X envs) it derives the percentage
-    // from the gauge's voltage instead of the gauge's own SOC, which reads
-    // garbage until the IT algorithm leaves INITIALIZATION. Still -1 if the
-    // gauge never came up.
-    state.device_pct = lipo._initialized ? getLipoSOC() : -1;
+    // TRMNL's own battery. readGaugeSoc() is the gauge's own coulomb-counted
+    // SOC, kept separate from readSoc() because BYPASS_BQ27427_SOC (set by
+    // both TRMNL X envs) makes the latter a voltage estimate — measured
+    // 3862 mV read as 72 % that way against the gauge's 10 %. Already -1 when
+    // the last gaugeInit() found no valid reading.
+    state.device_pct = battery().readGaugeSoc();
     state.engine_v = ble.shunt.valid ? ble.shunt.aux_voltage : NAN;
     state.saloon_temp = ble.ruuvi_saloon.valid ? ble.ruuvi_saloon.temperature : NAN;
     state.saloon_humidity = ble.ruuvi_saloon.valid ? ble.ruuvi_saloon.humidity : NAN;
