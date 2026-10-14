@@ -60,6 +60,9 @@
 #include "messages.h"
 #include "displayed_image.h"
 #include <globals.h>
+#ifdef CLOCK91_MODE
+#include "clock91.h"
+#endif
 
 static float vBatt;
 static https_request_err_e downloadAndShow(); // download and show the image
@@ -263,11 +266,33 @@ void bl_init(void)
     ESP.restart();
   }
 
+#ifndef CLOCK91_MODE
+  // clock91 registers its own touch callback in clock91_init() and translates
+  // the raw IQS323 gestures itself, so it must not consume the event here.
   if (gpio_wakeup) {
     process_iqs323_data();
   }
+#endif
 
   Log_info("init time: %ld us", init_time);
+
+#ifdef CLOCK91_MODE
+  // Hand off to clock91. Everything the clock needs is up by now: display,
+  // filesystem, preferences and the IQS323 touch task.
+  //
+  // The fuel gauge is brought up here because bl_init()'s own gaugeInit() call
+  // sits further down, past the point this path returns from — without this the
+  // gauge is never initialised and device SOC always reads zero.
+  battery_count = detect_battery_count();
+  battery_charging = (power().chargingStatus() == ChargingStatus::CHARGING);
+  Log_info("BATTERY COUNT: %d", battery_count);
+  Log_info("BATTERY CHARGING: %s", battery_charging ? "YES" : "NO");
+  battery().gaugeInit();
+
+  clock91_init();
+  return; // clock91 drives everything from bl_process() -> clock91_loop()
+#endif
+
 #else // BOARD_TRMNL_X
 
   if (double_click)
@@ -608,6 +633,9 @@ void bl_init(void)
  */
 void bl_process(void)
 {
+#ifdef CLOCK91_MODE
+  clock91_loop();
+#endif
 }
 
 ApiDisplayInputs loadApiDisplayInputs(Preferences &preferences)

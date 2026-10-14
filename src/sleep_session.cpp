@@ -65,6 +65,21 @@ void goToSleep(void) {
 
   filesystem_deinit();
   uint32_t time_to_sleep = refreshInterval.seconds();
+#ifdef CLOCK91_MODE
+  // Sleep until the next whole minute to keep the clock aligned. getTime()
+  // returns epoch seconds, so (60 - now % 60) lands on the next :00 boundary
+  // regardless of how long this wake cycle took. Computed here rather than
+  // stored through refreshInterval so this minute-by-minute value never
+  // touches NVS. Falls back to the stored interval if the clock is unsynced.
+  {
+    uint32_t now = systemClock().getTime();
+    if (now > 0) {
+      time_to_sleep = 60 - (now % 60);
+      if (time_to_sleep < 5) // too close to the edge — skip to the next minute
+        time_to_sleep += 60;
+    }
+  }
+#endif
   iPrevWakeTime = millis() - startup_time; // save for statistics
   Log.info("%s [%d]: total awake time - %d ms\r\n", __FILE__, __LINE__, iPrevWakeTime);
   Log.info("%s [%d]: time to sleep - %d\r\n", __FILE__, __LINE__, time_to_sleep);
@@ -131,6 +146,36 @@ void goToSleepButtonOnly(void) {
 #endif
   esp_deep_sleep_start();
 }
+
+#ifdef CLOCK91_MODE
+// Deep sleep with a minute-aligned timer wake (see goToSleep()). goToSleep()
+// already puts the panel to sleep itself, so this is a thin named wrapper that
+// keeps clock91 off the sleep path's internals.
+void bl_deep_sleep(void) { goToSleep(); }
+
+// True power-off: sleep until a touch wakes the device, with no timer armed.
+// goToSleepButtonOnly() skips the TRMNL X low-power preparation that
+// goToSleep() does, so do that here before handing over.
+void bl_hibernate(void) {
+  Log_info("Preparing IQS323 for sleep via task...");
+  if (!iqs323_task_prepare_sleep(5000)) {
+    Log.warning("IQS323 sleep preparation timeout - proceeding anyway\n");
+  }
+
+  // Gesture config last, so prepare_sleep's writeMM() cannot override it.
+  touchbar_prepare_for_sleep();
+
+  iqs323_task_deinit();
+  Log_info("IQS323 is ready for sleep.");
+
+  esp_set_deep_sleep_wake_stub(*wakeup_stub);
+  display_sleep();
+  config_tca95535_pins_for_lp();
+  config_gpio_for_lp();
+
+  goToSleepButtonOnly();
+}
+#endif // CLOCK91_MODE
 
 void config_gpio_for_lp() {
 
