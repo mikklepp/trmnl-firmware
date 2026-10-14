@@ -14,6 +14,7 @@
 #include "wifi-helpers.h"
 void goToSleep(void);
 void saveShipmentStarted(void);
+bool checkIfAlreadyShipped(void);
 void showMessageWithLogo(MSG message_type);
 // 15 minute timeout to prevent dead batteries
 #define PORTAL_TIMEOUT (15 * 60 * 1000)
@@ -156,6 +157,11 @@ bool WifiCaptive::startPortal() {
 
     if (_tickCallback) _tickCallback();
 
+    if (_abortCallback && _abortCallback()) {
+      Log_info("Portal aborted by callback");
+      break;
+    }
+
     if (_connectionState.load() != WifiConnectionState::Connecting) {
       delay(DNS_INTERVAL);
     } else if ((uint32_t)(millis() - _connectionRequestedAt.load()) < 1000) {
@@ -259,6 +265,14 @@ bool WifiCaptive::startPortal() {
   // Take different action for timeout (go to sleep)
   if ((millis() - lTime) > PORTAL_TIMEOUT) {
 #ifdef BOARD_TRMNL_X
+    // Shipping mode is a factory bench state: it spins until USB is unplugged,
+    // then sleeps until a charger appears. On a unit already in the field that
+    // turns an unanswered portal into a device only a charger can revive.
+    if (checkIfAlreadyShipped()) {
+      showMessageWithLogo(CAPTIVE_WIFI_TIMEOUT);
+      goToSleep();
+      return succesfullyConnected;
+    }
     if (power().usbStatus() == UsbStatus::CONNECTED) {
       showMessageWithLogo(READY_TO_SHIP);
       while (power().usbStatus() == UsbStatus::CONNECTED) {
@@ -341,6 +355,8 @@ wl_status_t WifiCaptive::connect(const WifiCredentials credentials) {
 void WifiCaptive::setResetSettingsCallback(std::function<void()> func) { _resetcallback = func; }
 
 void WifiCaptive::setPortalTickCallback(std::function<void()> func) { _tickCallback = func; }
+
+void WifiCaptive::setAbortCallback(std::function<bool()> func) { _abortCallback = func; }
 
 void WifiCaptive::setHostname(const String &hostname) { _hostname = hostname; }
 
