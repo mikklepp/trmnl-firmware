@@ -37,15 +37,40 @@ SAMPLE_RE = re.compile(
     r"\s+design=(?P<design>\d+)mAh"
     r"\s+v=(?P<mv>\d+)mV"
     r"\s+i=(?P<ma>[-+]?\d+)mA"  # firmware uses %d, but tolerate a signed form
-    r"\s+itsoc=(?P<soc>\d+)%"
-    r"\s+flags=0x(?P<flags>[0-9A-Fa-f]{4})"
+    # The %% in the firmware format string does not render on this build, so the
+    # line reads "itsoc=99flags=0x0088" with no % and no separator. Tolerate both.
+    r"\s+itsoc=(?P<soc>\d+)%?"
+    r"\s*flags=0x(?P<flags>[0-9A-Fa-f]{4})"
     r"(?P<rest>.*)"
 )
 
-BQ27427_FLAG_DSG = 1 << 0
-BQ27427_FLAG_FC = 1 << 9
-BQ27427_FLAG_CHG = 1 << 8
-BQ27427_FLAG_ITPOR = 1 << 5
+# From lib/BQ27427/src/BQ27427_Definitions.h
+BQ27427_FLAG_DSG = 1 << 0       # discharging
+BQ27427_FLAG_SOCF = 1 << 1      # SOC final threshold
+BQ27427_FLAG_SOC1 = 1 << 2      # SOC1 threshold
+BQ27427_FLAG_BAT_DET = 1 << 3   # battery detected
+BQ27427_FLAG_CFGUPMODE = 1 << 4 # config update mode
+BQ27427_FLAG_ITPOR = 1 << 5     # Impedance Track reset
+BQ27427_FLAG_DOD_CRRCT = 1 << 6 # depth-of-discharge correction
+BQ27427_FLAG_OCVTAKEN = 1 << 7  # open-circuit voltage taken
+BQ27427_FLAG_CHG = 1 << 8       # fast charging allowed
+BQ27427_FLAG_FC = 1 << 9        # full charge detected
+BQ27427_FLAG_UT = 1 << 14       # under-temperature
+BQ27427_FLAG_OT = 1 << 15       # over-temperature
+
+FLAG_NAMES = [
+    (BQ27427_FLAG_OT, "OT"), (BQ27427_FLAG_UT, "UT"),
+    (BQ27427_FLAG_FC, "FC"), (BQ27427_FLAG_CHG, "CHG"),
+    (BQ27427_FLAG_OCVTAKEN, "OCVTAKEN"), (BQ27427_FLAG_DOD_CRRCT, "DOD_CRRCT"),
+    (BQ27427_FLAG_ITPOR, "ITPOR"), (BQ27427_FLAG_CFGUPMODE, "CFGUPMODE"),
+    (BQ27427_FLAG_BAT_DET, "BAT_DET"), (BQ27427_FLAG_SOC1, "SOC1"),
+    (BQ27427_FLAG_SOCF, "SOCF"), (BQ27427_FLAG_DSG, "DSG"),
+]
+
+
+def decode_flags(f):
+    names = [n for bit, n in FLAG_NAMES if f & bit]
+    return " ".join(names) if names else "(none)"
 
 
 class Sample:
@@ -100,26 +125,44 @@ def report(samples, label="", inferred_time=False):
     currents = [s.ma for s in samples]
     print(f"  i= reported    min {min(currents)} / mean {sum(currents)/len(currents):+.1f} / max {max(currents)} mA")
 
-    # Flag audit: anything here means the number below is not an idle discharge rate.
+    flag_union = 0
+    for s in samples:
+        flag_union |= s.flags
+    print(f"  flags seen     {decode_flags(flag_union)}")
+
+    # Flag audit. Anything here means the rate below is not an idle discharge
+    # rate. DSG is the positive signal: the pack is only discharging when it is
+    # set, so "not DSG" catches charging AND sitting full on the charger, which
+    # reports neither CHG nor DSG (observed: 0x0088 = BAT_DET|OCVTAKEN).
     problems = []
+    dsg_count = sum(1 for s in samples if s.flags & BQ27427_FLAG_DSG)
+    if dsg_count == 0:
+        problems.append("DSG never set — pack never discharged (USB attached?); "
+                        "unplug USB and rerun")
+    elif dsg_count < len(samples):
+        problems.append(f"DSG set on only {dsg_count}/{len(samples)} samples — "
+                        "pack was not discharging throughout")
     if any(s.flags & (BQ27427_FLAG_CHG | BQ27427_FLAG_FC) for s in samples):
-        problems.append("CHG/FC seen — charger attached, not a discharge run")
+        problems.append("CHG/FC seen — charger was active")
     if any(s.flags & BQ27427_FLAG_ITPOR for s in samples):
         problems.append("ITPOR seen — gauge reset, readings untrustworthy")
-    if not all(s.flags & BQ27427_FLAG_DSG for s in samples):
-        problems.append("DSG not set on every sample — pack was not always discharging")
+    if any(s.flags & BQ27427_FLAG_CFGUPMODE for s in samples):
+        problems.append("CFGUPMODE seen — gauge was being reconfigured")
+    if any(s.ma > 0 for s in samples):
+        problems.append("positive current seen — charging, not discharging")
     if elapsed_h < 0.5:
         problems.append(f"only {elapsed_h*60:.0f} min of data — too short to be stable")
     if used_mah <= 0:
         problems.append("remain did not decrease — no measurable discharge")
 
-    if elapsed_h > 0 and used_mah > 0:
+    if elapsed_h > 0 and used_mah > 0 and dsg_count == len(samples):
         rate = used_mah / elapsed_h
         print(f"\n  >> discharge    {rate:.1f} mAh/h  (= {rate:.1f} mA average draw)")
         if last.full > 0:
             print(f"  >> autonomy     {last.full / rate / 24:.1f} days from {last.full} mAh")
     else:
         rate = None
+        print("\n  >> no discharge rate — see warnings below")
 
     if problems:
         print("\n  WARNINGS (the rate above may be meaningless):")
