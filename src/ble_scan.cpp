@@ -4,6 +4,7 @@
 
 #include <string>
 #include <NimBLEDevice.h>
+#include <esp_bt.h>
 #include <Preferences.h>
 #include <freertos/semphr.h>
 #include <trmnl_log.h>
@@ -212,6 +213,37 @@ class Clock91ScanCallbacks : public NimBLEScanCallbacks {
 
 static Clock91ScanCallbacks scanCallbacks;
 
+// esp_bt_controller_enable() holds ESP_PM_NO_LIGHT_SLEEP until disable() — tied
+// to enable/disable, not to whether a scan is running, so an idle-but-enabled
+// controller blocks light sleep between full cycles. disable() also powers down
+// the BT PHY (ref-counted per modem, so WiFi is unaffected).
+//
+// Only the controller is cycled, never NimBLEDevice::deinit(): that asserts in
+// esp_nimble_deinit() (npl_os_freertos.c:273). The host keeps its event queues
+// and HCI transport while the controller moves ENABLED <-> INITED.
+
+static void ble_controller_resume(void) {
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED) {
+        return;
+    }
+    esp_err_t err = esp_bt_controller_enable(ESP_BT_MODE_BLE);
+    if (err != ESP_OK) {
+        Log_error("BLE: controller enable failed: %d", (int)err);
+    }
+}
+
+static void ble_controller_suspend(void) {
+    if (esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_ENABLED) {
+        return;
+    }
+    esp_err_t err = esp_bt_controller_disable();
+    if (err != ESP_OK) {
+        Log_error("BLE: controller disable failed: %d", (int)err);
+        return;
+    }
+    Log_info("BLE: controller suspended (light-sleep lock released)");
+}
+
 BleScanResult ble_scan_run(int duration_seconds) {
     scan_result = {};
     devices_heard = 0;
@@ -235,8 +267,10 @@ BleScanResult ble_scan_run(int duration_seconds) {
     // stack each cycle, so init once and only start/stop the scan.
     static bool nimble_ready = false;
     if (!nimble_ready) {
-        NimBLEDevice::init("");
+        NimBLEDevice::init("");  // leaves the controller enabled
         nimble_ready = true;
+    } else {
+        ble_controller_resume();  // suspended at the end of the last scan
     }
 
     NimBLEScan* scan = NimBLEDevice::getScan();
@@ -262,6 +296,11 @@ BleScanResult ble_scan_run(int duration_seconds) {
 
     scan->stop();
     scan->clearResults();
+
+    // Release the light-sleep lock for the rest of the cycle. Scanning is the
+    // only thing clock91 does over BLE, so the controller has no reason to stay
+    // enabled until the next full cycle.
+    ble_controller_suspend();
 
     Log_info("BLE: scan complete, heard=0x%02X/0x%02X (%d/%d devices)",
              devices_heard, devices_expected_mask,
