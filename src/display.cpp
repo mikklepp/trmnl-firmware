@@ -580,6 +580,14 @@ void modem_enter_bootloader(void) {
   delay(300);
 }
 
+// Cut the ESP32-C5's enable line. clock91 uses the S3's own radio and never
+// issues an AT command, so the modem would otherwise sit booted and idle
+// through every cycle. modem_reset_target() brings it back (it ends with EN
+// high) for the captive portal, which does need it for 5 GHz scanning.
+void modem_power_off(void) {
+  bbep.ioWrite(PIN_ESP32C5_EN, 0);
+}
+
 void modem_reset_target(void) {
   // Disable target
   bbep.ioWrite(PIN_ESP32C5_EN, 0);

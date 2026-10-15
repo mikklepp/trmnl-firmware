@@ -856,6 +856,14 @@ static void clock91_start_portal(void) {
         });
     }
 
+    // Deliberately no modem power-up here. The portal only reaches the C5
+    // through g_modem, which upstream assigns in wifi_session.cpp — a path
+    // bl_init() returns before on CLOCK91_MODE, so g_modem is always null and
+    // every modem branch is already skipped. The portal has therefore always
+    // run 2.4 GHz-only on this build; powering the C5 down does not change it.
+    // Restoring 5 GHz scanning means wiring up g_modem and setModemMac(), not
+    // just raising the enable line.
+
     // Portal blocks until WiFi is configured or the abort callback fires
     WifiCaptivePortal.startPortal();
     WifiCaptivePortal.setAbortCallback(nullptr);
@@ -1145,6 +1153,18 @@ void clock91_init(void) {
     render_init();
     buzzer_init();
     ble_config_init();
+
+    // Cut the ESP32-C5 WiFi modem. This board is dual-ESP and upstream drives
+    // the C5 over UART AT commands, but clock91 goes through WiFi.h/HTTPClient
+    // on the S3's own radio and never issues one. Nothing in the runtime drove
+    // PIN_ESP32C5_EN, so the C5 stayed booted and idle through every cycle —
+    // only the deep-sleep prep in config_tca95535_pins_for_lp() ever pulled it
+    // low, and the minute cycle does not deep sleep.
+    //
+    // The captive portal is the one path that needs it (5 GHz scanning), and
+    // clock91_start_portal() powers it back up around startPortal().
+    modem_power_off();
+    Log_info("clock91: ESP32-C5 modem powered down (unused on this path)");
 
     // Create the wake semaphore before registering the callback, so the first
     // signal cannot arrive with wake_sem still NULL.
